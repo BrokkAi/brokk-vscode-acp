@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/acp-host"]
+resolver = "2"

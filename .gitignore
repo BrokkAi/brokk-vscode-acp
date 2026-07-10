@@ -1,0 +1,7 @@
+/node_modules/
+/dist/
+/target/
+*.vsix
+.DS_Store
+/.bifrost/
+/.brokk/

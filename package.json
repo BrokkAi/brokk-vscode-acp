@@ -1,0 +1,65 @@
+{
+  "name": "brokk-vscode-acp",
+  "displayName": "Brokk ACP",
+  "description": "A Rust-powered Agent Client Protocol client for VS Code",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["Other", "Machine Learning"],
+  "activationEvents": ["onView:brokkAcp.chat"],
+  "main": "./dist/extension.js",
+  "extensionKind": ["workspace"],
+  "contributes": {
+    "commands": [
+      { "command": "brokkAcp.connect", "title": "Brokk ACP: Connect" },
+      { "command": "brokkAcp.disconnect", "title": "Brokk ACP: Disconnect" }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        { "id": "brokkAcp", "title": "Brokk ACP", "icon": "resources/brokk-acp.svg" }
+      ]
+    },
+    "views": {
+      "brokkAcp": [
+        { "type": "webview", "id": "brokkAcp.chat", "name": "Chat" }
+      ]
+    },
+    "configuration": {
+      "title": "Brokk ACP",
+      "properties": {
+        "brokkAcp.agent.command": {
+          "type": "string",
+          "default": "anvil",
+          "description": "ACP agent executable"
+        },
+        "brokkAcp.agent.args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Arguments passed to the ACP agent"
+        },
+        "brokkAcp.host.path": {
+          "type": "string",
+          "default": "",
+          "description": "Development override for the Rust host executable"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "npm run compile:rust && npm run compile:extension",
+    "compile:rust": "cargo build --package brokk-acp-host",
+    "compile:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
+    "check": "tsc --noEmit && cargo check --workspace",
+    "watch": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.8.0"
+  }
+}
