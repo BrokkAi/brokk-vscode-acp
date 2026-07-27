@@ -117,7 +117,14 @@ export function webviewHtml(webview: vscode.Webview): string {
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--vscode-progressBar-background, #3b8eea) 18%, transparent);
     }
     .status-dot.error { background: var(--vscode-errorForeground); }
-    .main { position: relative; width: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+    .main {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
     .empty {
       height: 100%;
       overflow: auto;
@@ -195,12 +202,15 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
     .text-button:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
     .session-view {
+      position: absolute;
+      inset: 0;
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: auto auto minmax(0, 1fr) auto;
       width: 100%;
       min-width: 0;
-      height: 100%;
+      min-height: 0;
+      max-height: 100%;
       overflow: hidden;
     }
     .session-toolbar {
