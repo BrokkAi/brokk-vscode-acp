@@ -145,3 +145,9 @@ VSIX files on tags.
 Follow-up milestones are side-by-side simultaneous agents, session forking,
 image/resource attachments, ACP elicitation forms, clickable diff navigation,
 and deeper workspace-aware context controls.
+
+## License
+
+Brokk ACP is licensed under the GNU General Public License, version 3 only.
+See [LICENSE](LICENSE). Bundled and installed agents retain their own licenses;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

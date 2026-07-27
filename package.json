@@ -6,7 +6,7 @@
   "icon": "icon.png",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
   "version": "0.3.2",
-  "license": "Apache-2.0",
+  "license": "GPL-3.0-only",
   "engines": {
     "vscode": "^1.95.0"
   },
