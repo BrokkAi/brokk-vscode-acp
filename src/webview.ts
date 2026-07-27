@@ -314,6 +314,30 @@ export function webviewHtml(webview: vscode.Webview): string {
       font-size: 15px;
       font-weight: 600;
     }
+    .connection-stage {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 440px;
+      padding: 7px 10px;
+      border: 1px solid var(--muted-border);
+      border-radius: 6px;
+      background: var(--surface);
+      text-align: left;
+    }
+    .connection-spinner {
+      width: 12px;
+      height: 12px;
+      flex: none;
+      border: 2px solid color-mix(in srgb, var(--vscode-progressBar-background, #3b8eea) 24%, transparent);
+      border-top-color: var(--vscode-progressBar-background, #3b8eea);
+      border-radius: 50%;
+      animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .connection-spinner { animation: none; }
+    }
     .entry { max-width: 100%; margin: 0 0 17px; overflow-wrap: anywhere; }
     .entry.user { display: flex; justify-content: flex-end; }
     .user-bubble {
@@ -952,12 +976,24 @@ export function webviewHtml(webview: vscode.Webview): string {
         welcome.className = 'welcome';
         const title = document.createElement('div');
         title.className = 'welcome-title';
-        title.textContent = active.status === 'connecting' ? 'Opening session…' : 'What would you like to build?';
-        const copy = document.createElement('div');
-        copy.textContent = active.status === 'connecting'
-          ? 'The ACP agent is starting and loading session state.'
-          : 'This conversation is stored with the workspace and can be reopened from Sessions.';
-        welcome.append(title, copy);
+        title.textContent = active.status === 'connecting'
+          ? 'Opening ' + active.agentName + '…'
+          : 'What would you like to build?';
+        if (active.status === 'connecting') {
+          const stage = document.createElement('div');
+          stage.className = 'connection-stage';
+          const spinner = document.createElement('i');
+          spinner.className = 'connection-spinner';
+          spinner.setAttribute('aria-hidden', 'true');
+          const copy = document.createElement('span');
+          copy.textContent = appState.connection?.detail || 'Starting the ACP agent…';
+          stage.append(spinner, copy);
+          welcome.append(title, stage);
+        } else {
+          const copy = document.createElement('div');
+          copy.textContent = 'This conversation is stored with the workspace and can be reopened from Sessions.';
+          welcome.append(title, copy);
+        }
         inner.appendChild(welcome);
       } else {
         for (const entry of active.entries) inner.appendChild(renderEntry(entry, active.status));

@@ -383,6 +383,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private activeConnectionId: number | undefined;
   private connectedAgentId: string | undefined;
   private pendingConnection: PendingConnection | undefined;
+  private connectionDetail: string | undefined;
   private capabilities: Record<string, unknown> | undefined;
   private auth: { message?: string; methods: unknown[] } | undefined;
   private banner: string | undefined;
@@ -430,7 +431,10 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       eventConnectionId !== undefined &&
       this.activeConnectionId !== undefined &&
       eventConnectionId !== this.activeConnectionId &&
-      (event.type === "error" || event.type === "disconnected")
+      (event.type === "connection_progress" ||
+        event.type === "connected" ||
+        event.type === "error" ||
+        event.type === "disconnected")
     ) {
       return;
     }
@@ -451,11 +455,18 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       case "connecting":
         this.activeConnectionId = eventConnectionId;
         this.connectionPhase = "connecting";
+        this.connectionDetail = "Starting the ACP agent process…";
         this.sessions.setConnecting();
         this.banner = undefined;
         break;
+      case "connection_progress":
+        if (typeof event.message === "string") {
+          this.connectionDetail = event.message;
+        }
+        break;
       case "connected":
         this.connectionPhase = "connected";
+        this.connectionDetail = "ACP handshake complete. Opening the session…";
         this.capabilities = isRecord(event.agent_capabilities)
           ? event.agent_capabilities
           : undefined;
@@ -465,6 +476,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         );
         break;
       case "agent_sessions": {
+        this.connectionDetail = undefined;
         const agent = this.connectedAgentId ? this.catalog.get(this.connectedAgentId) : undefined;
         if (agent) {
           this.sessions.mergeRemoteSessions(
@@ -482,11 +494,13 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
             : "Session discovery failed for this agent.";
         break;
       case "session_replay_started":
+        this.connectionDetail = "Loading the saved transcript…";
         if (typeof event.session_id === "string") {
           this.sessions.startReplay(event.session_id);
         }
         break;
       case "session_started":
+        this.connectionDetail = undefined;
         if (typeof event.session_id === "string") {
           this.sessions.setSessionStarted(
             event.session_id,
@@ -547,6 +561,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         break;
       case "error": {
         const message = typeof event.message === "string" ? event.message : "Unknown ACP error";
+        this.connectionDetail = undefined;
         if (this.sessions.active && !this.showStart) {
           this.sessions.addError(message);
         } else {
@@ -557,6 +572,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       case "disconnected":
         this.connectionPhase = "idle";
         this.activeConnectionId = undefined;
+        this.connectionDetail = undefined;
         this.sessions.disconnected();
         this.capabilities = undefined;
         this.auth = undefined;
@@ -570,6 +586,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         this.connectionPhase = "idle";
         this.activeConnectionId = undefined;
         this.connectedAgentId = undefined;
+        this.connectionDetail = undefined;
         this.sessions.disconnected();
         this.banner = "The Brokk ACP host exited.";
         break;
@@ -696,6 +713,12 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
     const sameAgent = this.connectedAgentId === agent.id;
     if (this.connectionPhase === "connected" && sameAgent) {
+      this.connectionDetail =
+        selection.mode === "new"
+          ? "Creating a new session…"
+          : selection.mode === "open"
+            ? "Opening the selected session…"
+            : "Loading available sessions…";
       if (selection.mode === "new") {
         this.host.send({ type: "new_session" });
       } else if (selection.mode === "open" && selection.session_id) {
@@ -712,7 +735,9 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
     if (this.connectionPhase !== "idle") {
       this.pendingConnection = { agent, selection };
+      this.connectionDetail = `Switching to ${agent.name}…`;
       this.host.disconnectSession();
+      this.postState();
       return;
     }
     this.launchConnection(agent, selection);
@@ -746,6 +771,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
     this.connectionPhase = "connecting";
     this.connectedAgentId = agent.id;
+    this.connectionDetail = `Starting ${agent.name}…`;
     this.capabilities = undefined;
     this.banner = undefined;
     this.host.connect(agent.launch, selection);
@@ -827,6 +853,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         connection: {
           phase: this.connectionPhase,
           agentId: this.connectedAgentId,
+          detail: this.connectionDetail,
           canList: sessionCapabilities?.list !== undefined,
           canDelete: sessionCapabilities?.delete !== undefined,
         },

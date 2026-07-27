@@ -209,7 +209,7 @@ pub async fn install(
         return install_binary(manifest, target, storage_dir).await;
     }
 
-    package_launch(manifest).with_context(|| {
+    package_launch(manifest, storage_dir).with_context(|| {
         format!(
             "{} {} has no distribution usable on this machine",
             manifest.name, manifest.version
@@ -224,7 +224,7 @@ fn summarize_agent(
 ) -> AgentSummary {
     let installed = installed_binary(agent, storage_dir);
     let binary_for_platform = platform.and_then(|value| agent.distribution.binary.get(value));
-    let package = package_launch_with_kind(agent);
+    let package = package_launch_with_kind(agent, storage_dir);
     let (distribution, available, requirement, launch) = if let Some(launch) = installed {
         (Some("binary".to_owned()), true, None, Some(launch))
     } else if binary_for_platform.is_some() {
@@ -270,40 +270,53 @@ fn package_requirement(agent: &AgentManifest) -> Option<String> {
     None
 }
 
-fn package_launch(agent: &AgentManifest) -> Option<LaunchSpec> {
-    package_launch_with_kind(agent).map(|(_, launch)| launch)
+fn package_launch(agent: &AgentManifest, storage_dir: &Path) -> Option<LaunchSpec> {
+    package_launch_with_kind(agent, storage_dir).map(|(_, launch)| launch)
 }
 
-fn package_launch_with_kind(agent: &AgentManifest) -> Option<(&'static str, LaunchSpec)> {
+fn package_launch_with_kind(
+    agent: &AgentManifest,
+    storage_dir: &Path,
+) -> Option<(&'static str, LaunchSpec)> {
     if let Some(target) = &agent.distribution.npx
         && let Some(command) = find_command("npx")
     {
         let mut args = vec!["--yes".to_owned(), target.package.clone()];
         args.extend(target.args.clone());
-        return Some((
-            "npx",
-            LaunchSpec {
-                command,
-                args,
-                env: target.env.clone(),
-            },
-        ));
+        let env = package_env(
+            target,
+            storage_dir,
+            "npm_config_cache",
+            Path::new("package-cache/npm"),
+        );
+        return Some(("npx", LaunchSpec { command, args, env }));
     }
     if let Some(target) = &agent.distribution.uvx
         && let Some(command) = find_command("uvx")
     {
         let mut args = vec![target.package.clone()];
         args.extend(target.args.clone());
-        return Some((
-            "uvx",
-            LaunchSpec {
-                command,
-                args,
-                env: target.env.clone(),
-            },
-        ));
+        let env = package_env(
+            target,
+            storage_dir,
+            "UV_CACHE_DIR",
+            Path::new("package-cache/uv"),
+        );
+        return Some(("uvx", LaunchSpec { command, args, env }));
     }
     None
+}
+
+fn package_env(
+    target: &PackageTarget,
+    storage_dir: &Path,
+    cache_variable: &str,
+    cache_path: &Path,
+) -> HashMap<String, String> {
+    let mut env = target.env.clone();
+    env.entry(cache_variable.to_owned())
+        .or_insert_with(|| storage_dir.join(cache_path).to_string_lossy().into_owned());
+    env
 }
 
 fn install_root(storage_dir: &Path, manifest: &AgentManifest) -> Result<PathBuf> {
@@ -749,6 +762,47 @@ mod tests {
         );
         assert!(!summary.available);
         assert!(summary.requirement.is_some());
+    }
+
+    #[test]
+    fn package_cache_is_owned_by_the_extension_without_overriding_registry_env() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let target = PackageTarget {
+            package: "test-agent@1.2.3".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+        };
+        let env = package_env(
+            &target,
+            temporary.path(),
+            "npm_config_cache",
+            Path::new("package-cache/npm"),
+        );
+        assert_eq!(
+            env.get("npm_config_cache"),
+            Some(
+                &temporary
+                    .path()
+                    .join("package-cache/npm")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+
+        let configured = PackageTarget {
+            env: HashMap::from([("npm_config_cache".into(), "/custom/cache".into())]),
+            ..target
+        };
+        let env = package_env(
+            &configured,
+            temporary.path(),
+            "npm_config_cache",
+            Path::new("package-cache/npm"),
+        );
+        assert_eq!(
+            env.get("npm_config_cache").map(String::as_str),
+            Some("/custom/cache")
+        );
     }
 
     #[test]

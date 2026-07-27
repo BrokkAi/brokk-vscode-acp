@@ -14,6 +14,7 @@ const host = spawn(hostPath, [], {
 });
 
 const hangingAgent = "process.stdin.resume();";
+const failingAgent = "console.error('simulated ACP launch failure'); process.exit(23);";
 const responsiveAgent = String.raw`
 const readline = require("node:readline");
 const lines = readline.createInterface({ input: process.stdin });
@@ -45,8 +46,10 @@ lines.on("line", (line) => {
 
 const events = [];
 let buffer = "";
-let stage = "replace_hung";
+let stage = "exit_fast";
 let completed = false;
+let failureReported = false;
+const failureStartedAt = Date.now();
 
 const timeout = setTimeout(() => {
   finish(new Error(`connection lifecycle test timed out:\n${JSON.stringify(events, null, 2)}`));
@@ -65,7 +68,20 @@ host.stdout.on("data", (chunk) => {
     const event = JSON.parse(line);
     events.push(event);
 
-    if (event.type === "connecting" && stage === "replace_hung") {
+    if (event.type === "error" && stage === "exit_fast") {
+      assert.match(event.message, /exit code 23/);
+      assert.match(event.message, /simulated ACP launch failure/);
+      failureReported = true;
+    } else if (
+      event.type === "disconnected" &&
+      event.reason === "closed" &&
+      stage === "exit_fast"
+    ) {
+      assert.ok(failureReported, "the child process failure should be reported before disconnect");
+      assert.ok(Date.now() - failureStartedAt < 2_000, "the child process failure should be immediate");
+      stage = "replace_hung";
+      connect(hangingAgent, "browse");
+    } else if (event.type === "connecting" && stage === "replace_hung") {
       stage = "replace_with_valid";
       setTimeout(() => {
         connect(responsiveAgent, "new");
@@ -117,6 +133,10 @@ host.stdout.on("data", (chunk) => {
         );
         assert.ok(disconnected, "the hung connection should be replaced");
         assert.ok(connected, "the replacement ACP agent should initialize");
+        assert.ok(
+          events.some((candidate) => candidate.type === "connection_progress"),
+          "connection stages should be reported while the agent starts",
+        );
         assert.equal(
           events.filter(
             (candidate) =>
@@ -134,7 +154,7 @@ host.stdout.on("data", (chunk) => {
   }
 });
 
-connect(hangingAgent, "browse");
+connect(failingAgent, "new");
 
 function connect(agentScript, mode) {
   send({
