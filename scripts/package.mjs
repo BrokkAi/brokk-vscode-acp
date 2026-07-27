@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 
 import extract from "extract-zip";
 
+import { resolveChildCommand } from "./resolve-child-command.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const anvilVersion = "0.24.0";
 const targets = {
@@ -93,7 +95,7 @@ const output =
   path.join(outputDirectory, `${packageJson.name}-${packageJson.version}-${target}.vsix`);
 const sourceDirectory = prepareSourceBundle();
 try {
-  run(commandName("npx"), [
+  run("npx", [
     "--no-install",
     "vsce",
     "package",
@@ -268,7 +270,8 @@ function copyExecutable(source, destination) {
 }
 
 function run(command, args) {
-  const result = spawnSync(commandName(command), args, {
+  const invocation = resolveChildCommand(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd: root,
     stdio: "inherit",
     shell: false,
@@ -277,10 +280,6 @@ function run(command, args) {
   if (result.status !== 0) {
     throw new Error(`${command} exited with status ${result.status ?? 1}`);
   }
-}
-
-function commandName(command) {
-  return process.platform === "win32" && !command.endsWith(".cmd") ? `${command}.cmd` : command;
 }
 
 function argument(name) {
