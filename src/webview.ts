@@ -204,16 +204,15 @@ export function webviewHtml(webview: vscode.Webview): string {
     .session-view {
       position: absolute;
       inset: 0;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto auto minmax(0, 1fr) auto;
+      display: flex;
+      flex-direction: column;
       width: 100%;
       min-width: 0;
       min-height: 0;
-      max-height: 100%;
       overflow: hidden;
     }
     .session-toolbar {
+      flex: none;
       min-height: 38px;
       display: flex;
       align-items: center;
@@ -299,6 +298,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
     }
     .transcript {
+      flex: 1 1 0;
       width: 100%;
       min-width: 0;
       min-height: 0;
@@ -471,6 +471,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
     .location { margin: 2px 0; color: var(--vscode-textLink-foreground); }
     .plan-dock {
+      flex: none;
       min-width: 0;
       padding: 7px 10px 0;
       background: var(--vscode-sideBar-background, var(--vscode-editor-background));
@@ -587,6 +588,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     .error { border-left-color: var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
     .composer-wrap {
       z-index: 4;
+      flex: none;
       width: 100%;
       min-width: 0;
       padding: 8px 9px 9px;
