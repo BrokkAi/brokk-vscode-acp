@@ -243,7 +243,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     .config-control select {
       width: var(--config-control-width, 72px);
       min-width: 66px;
-      max-width: 166px;
+      max-width: 220px;
       min-height: 26px;
       height: 26px;
       padding: 2px 21px 2px 8px;
@@ -909,7 +909,7 @@ export function webviewHtml(webview: vscode.Webview): string {
           for (const choice of choices) {
             const node = document.createElement('option');
             node.value = choice.value;
-            node.textContent = compactConfigValue(option, choice);
+            node.textContent = compactConfigValue(choice);
             node.selected = choice.value === option.currentValue;
             select.appendChild(node);
           }
@@ -1234,10 +1234,8 @@ export function webviewHtml(webview: vscode.Webview): string {
       return options.flatMap(entry => entry && Array.isArray(entry.options) ? entry.options : [entry]);
     }
 
-    function compactConfigValue(option, choice) {
+    function compactConfigValue(choice) {
       let value = String(choice.name || choice.value || '');
-      const key = String((option.name || '') + ' ' + (option.id || '')).toLowerCase();
-      if (key.includes('model')) value = value.replace(/^[^:]+::/, '');
       value = value.replace(/^Default\\s*\\(([^)]+)\\)$/i, 'Default · $1');
       return value;
     }
@@ -1245,10 +1243,10 @@ export function webviewHtml(webview: vscode.Webview): string {
     function syncConfigControl(wrapper, select, option, choices) {
       const selected = choices.find(choice => choice.value === select.value);
       const fullValue = selected ? String(selected.name || selected.value) : select.value;
-      const compactValue = selected ? compactConfigValue(option, selected) : select.value;
+      const compactValue = selected ? compactConfigValue(selected) : select.value;
       const label = option.name || option.id;
       wrapper.title = label + ': ' + fullValue;
-      const width = Math.min(166, Math.max(66, Math.ceil(compactValue.length * 6.35 + 39)));
+      const width = Math.min(220, Math.max(66, Math.ceil(compactValue.length * 6.35 + 39)));
       select.style.setProperty('--config-control-width', width + 'px');
     }
 
