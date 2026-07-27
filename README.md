@@ -14,9 +14,9 @@ agents instead of coupling the editor to one provider.
 
 ## Brokk ACP in action
 
-### Start any ACP agent
+### Choose from the ACP registry
 
-![Start an ACP session with bundled Anvil, a custom server, or a registry agent](docs/screenshots/new-session.png)
+![Choose bundled Anvil or an installed or installable agent from the official ACP registry](docs/screenshots/new-session.png)
 
 ### Work in a persistent coding session
 
