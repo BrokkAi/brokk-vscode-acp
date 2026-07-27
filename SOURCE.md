@@ -23,4 +23,6 @@ included in the VSIX remains the authoritative corresponding source even when
 repository access is unavailable.
 
 The separately bundled Anvil executable has its own corresponding-source
-instructions under `licenses/anvil/SOURCE.md`.
+instructions under `licenses/anvil/SOURCE.md` in every VSIX. Repository readers
+can use the versioned
+[Anvil 0.24.0 source and notices](https://github.com/BrokkAi/anvil/tree/v0.24.0).

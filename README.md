@@ -229,4 +229,6 @@ repository visibility. See [SOURCE.md](SOURCE.md).
 
 Brokk ACP is licensed under the GNU General Public License, version 3 only.
 See [LICENSE](LICENSE). Bundled and installed agents retain their own licenses;
-see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The tracked native-host
+dependency inventory and license texts are available directly at
+[legal/host/THIRD_PARTY_LICENSES.html](legal/host/THIRD_PARTY_LICENSES.html).
