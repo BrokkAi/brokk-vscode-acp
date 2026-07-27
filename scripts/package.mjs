@@ -83,6 +83,7 @@ if (suppliedAnvil) {
   anvilRoot = path.dirname(anvilBinary);
 }
 copyAnvilNotices(anvilRoot);
+copyHostNotices();
 
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const outputDirectory = path.join(root, "artifacts");
@@ -90,17 +91,23 @@ fs.mkdirSync(outputDirectory, { recursive: true });
 const output =
   argument("--out") ||
   path.join(outputDirectory, `${packageJson.name}-${packageJson.version}-${target}.vsix`);
-run(commandName("npx"), [
-  "--no-install",
-  "vsce",
-  "package",
-  "--target",
-  target,
-  "--allow-missing-repository",
-  "--out",
-  output,
-]);
-console.log(output);
+const sourceDirectory = prepareSourceBundle();
+try {
+  run(commandName("npx"), [
+    "--no-install",
+    "vsce",
+    "package",
+    "--target",
+    target,
+    "--allow-missing-repository",
+    "--out",
+    output,
+  ]);
+  await verifyPackage(output, target, hostName, anvilName);
+  console.log(output);
+} finally {
+  fs.rmSync(sourceDirectory, { recursive: true, force: true });
+}
 
 async function downloadAndExtractAnvil(config) {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "brokk-acp-anvil-"));
@@ -153,6 +160,83 @@ function copyAnvilNotices(sourceRoot) {
   }
 }
 
+function copyHostNotices() {
+  const source = path.join(root, "legal", "host", "THIRD_PARTY_LICENSES.html");
+  if (!fs.existsSync(source)) {
+    fail("Rust host notice report is missing; run npm run license:generate");
+  }
+  const output = path.join(root, "licenses", "host");
+  fs.rmSync(output, { recursive: true, force: true });
+  fs.mkdirSync(output, { recursive: true });
+  fs.copyFileSync(source, path.join(output, "THIRD_PARTY_LICENSES.html"));
+}
+
+function prepareSourceBundle() {
+  const output = path.join(root, "source");
+  fs.rmSync(output, { recursive: true, force: true });
+  fs.mkdirSync(output, { recursive: true });
+
+  for (const entry of [
+    ".github",
+    "crates",
+    "legal",
+    "scripts",
+    "src",
+    "Cargo.lock",
+    "Cargo.toml",
+    "CHANGELOG.md",
+    "icon.png",
+    "LICENSE",
+    "package-lock.json",
+    "package.json",
+    "README.md",
+    "SECURITY.md",
+    "SOURCE.md",
+    "SUPPORT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "tsconfig.json",
+  ]) {
+    const source = path.join(root, entry);
+    if (!fs.existsSync(source)) fail(`Corresponding-source input is missing: ${entry}`);
+    fs.cpSync(source, path.join(output, entry), { recursive: true });
+  }
+  return output;
+}
+
+async function verifyPackage(archive, target, hostName, anvilName) {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "brokk-acp-vsix-"));
+  try {
+    await extract(archive, { dir: temporary });
+    for (const required of [
+      "extension/package.json",
+      "extension/changelog.md",
+      "extension/LICENSE.txt",
+      "extension/SECURITY.md",
+      "extension/SOURCE.md",
+      "extension/SUPPORT.md",
+      "extension/THIRD_PARTY_NOTICES.md",
+      `extension/bin/${target}/${hostName}`,
+      `extension/bin/${target}/${anvilName}`,
+      "extension/licenses/anvil/LICENSE",
+      "extension/licenses/anvil/SOURCE.md",
+      "extension/licenses/anvil/THIRD_PARTY_LICENSES.html",
+      "extension/licenses/host/THIRD_PARTY_LICENSES.html",
+      "extension/source/Cargo.lock",
+      "extension/source/icon.png",
+      "extension/source/package-lock.json",
+      "extension/source/crates/acp-host/src/main.rs",
+      "extension/source/src/extension.ts",
+      "extension/source/scripts/package.mjs",
+    ]) {
+      if (!fs.existsSync(path.join(temporary, required))) {
+        fail(`Packaged VSIX is missing ${required}`);
+      }
+    }
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 function findUpwardFile(start, name) {
   let current = path.resolve(start);
   for (let depth = 0; depth < 4; depth += 1) {
@@ -190,7 +274,9 @@ function run(command, args) {
     shell: false,
   });
   if (result.error) fail(result.error.message);
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) {
+    throw new Error(`${command} exited with status ${result.status ?? 1}`);
+  }
 }
 
 function commandName(command) {
@@ -216,6 +302,5 @@ function inferredTarget() {
 }
 
 function fail(message) {
-  console.error(message);
-  process.exit(1);
+  throw new Error(message);
 }

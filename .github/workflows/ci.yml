@@ -4,7 +4,10 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - master
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -17,5 +20,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
-      - run: npm run check
-      - run: cargo test --workspace --locked
+      - run: cargo install --locked cargo-about --version 0.9.1 --features cli
+      - run: cargo fetch --locked
+      - run: npm test
+      - run: npm run license:check

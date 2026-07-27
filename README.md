@@ -81,7 +81,13 @@ extension host:
 
 Packaging requires Node.js 20 or newer and Rust. The packaging script downloads
 the pinned Anvil release, verifies its digest, builds the matching Rust host,
-and includes the required Anvil license and source notices.
+and includes the required license notices and complete corresponding source.
+
+After publication, install from the VS Code Marketplace with:
+
+```bash
+code --install-extension brokk.brokk-vscode-acp
+```
 
 ## Use
 
@@ -202,12 +208,22 @@ Validation commands:
 
 ```bash
 cargo test --workspace --locked
-npm run check
-npm run test:lifecycle
-npm run compile
+npm test
+npm run license:check
+npm run package -- --target <platform>
 ```
 
-The tag packaging workflow builds all five supported platform VSIX files.
+`cargo-about` version 0.9.1 is required for `npm run license:check`. The tag
+release workflow rejects mismatched versions, validates the complete suite,
+builds all five supported platform VSIX files, publishes them as one
+platform-specific Marketplace version, and attaches them to a GitHub release.
+
+## Corresponding source
+
+Every VSIX carries the exact TypeScript and Rust source, locked dependency
+manifests, and build scripts used for that package under `extension/source/`.
+This keeps the GPL source available to every recipient independently of
+repository visibility. See [SOURCE.md](SOURCE.md).
 
 ## License
 
