@@ -1087,11 +1087,11 @@ export function webviewHtml(webview: vscode.Webview): string {
 
     function renderComposer(active) {
       const running = active.status === 'running';
-      const usable = active.status === 'ready' || running;
-      elements.prompt.disabled = !usable || running;
+      const ready = active.status === 'ready';
+      elements.prompt.disabled = false;
       elements['send-button'].classList.toggle('hidden', running);
       elements['stop-button'].classList.toggle('hidden', !running);
-      elements['send-button'].disabled = !usable || !elements.prompt.value.trim();
+      elements['send-button'].disabled = !ready || !elements.prompt.value.trim();
       elements['composer-hint'].textContent = usageLabel(active.usage) || (running ? 'Agent is working…' : '⌘↵ to send');
     }
 
@@ -1278,7 +1278,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     elements['stop-button'].onclick = () => post('cancel');
     elements.prompt.oninput = () => {
       autosizePrompt();
-      elements['send-button'].disabled = !elements.prompt.value.trim();
+      elements['send-button'].disabled = appState.active?.status !== 'ready' || !elements.prompt.value.trim();
     };
     elements.prompt.onkeydown = event => {
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {

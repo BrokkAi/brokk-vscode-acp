@@ -78,6 +78,7 @@ export class SessionStore {
   private activeLocalId: string | undefined;
   private activeTurnId: string | undefined;
   private replaying = false;
+  private replayBackup: TranscriptEntry[] | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -87,7 +88,7 @@ export class SessionStore {
         if (isSessionRecord(session)) {
           this.sessions.set(session.localId, {
             ...session,
-            status: session.status === "running" ? "disconnected" : session.status,
+            status: "disconnected",
           });
         }
       }
@@ -134,13 +135,23 @@ export class SessionStore {
     }
     this.activeLocalId = localId;
     this.activeTurnId = undefined;
-    this.replaying = replay;
+    this.replaying = false;
+    this.replayBackup = undefined;
     session.status = "connecting";
-    if (replay) {
-      session.entries = [];
-    }
     this.touch(session);
     return session;
+  }
+
+  startReplay(remoteId: string): void {
+    const session = this.active;
+    if (!session || session.remoteId !== remoteId) {
+      return;
+    }
+    this.replayBackup = structuredClone(session.entries);
+    session.entries = [];
+    this.activeTurnId = undefined;
+    this.replaying = true;
+    this.touch(session);
   }
 
   setConnecting(): void {
@@ -176,6 +187,7 @@ export class SessionStore {
     active.modes = modes;
     active.status = "ready";
     this.replaying = false;
+    this.replayBackup = undefined;
     for (const entry of active.entries) {
       if (entry.status === "streaming") {
         entry.status = "completed";
@@ -381,12 +393,17 @@ export class SessionStore {
   }
 
   disconnected(): void {
-    if (this.active) {
-      this.active.status = "disconnected";
-      this.touch(this.active);
+    const session = this.active;
+    if (session) {
+      if (this.replaying && this.replayBackup) {
+        session.entries = this.replayBackup;
+      }
+      session.status = "disconnected";
+      this.touch(session);
     }
     this.activeTurnId = undefined;
     this.replaying = false;
+    this.replayBackup = undefined;
   }
 
   removeByRemoteId(agentId: string, remoteId: string): void {

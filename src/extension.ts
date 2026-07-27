@@ -386,6 +386,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private auth: { message?: string; methods: unknown[] } | undefined;
   private banner: string | undefined;
   private showStart = false;
+  private restorePending = true;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -425,6 +426,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     switch (event.type) {
       case "catalog":
         this.catalog.updateOfficial(event.agents);
+        this.restoreActiveSession();
         break;
       case "catalog_loading":
         break;
@@ -461,6 +463,9 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         break;
       }
       case "session_replay_started":
+        if (typeof event.session_id === "string") {
+          this.sessions.startReplay(event.session_id);
+        }
         break;
       case "session_started":
         if (typeof event.session_id === "string") {
@@ -560,6 +565,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         case "ready":
           this.postState();
           await this.host.listAgents();
+          this.restoreActiveSession();
           break;
         case "select_agent":
           if (typeof message.agent_id === "string") {
@@ -689,6 +695,28 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     this.launchConnection(agent, selection);
+  }
+
+  private restoreActiveSession(): void {
+    if (!this.restorePending || this.connectionPhase !== "idle") {
+      return;
+    }
+    const session = this.sessions.active;
+    if (!session?.remoteId) {
+      this.restorePending = false;
+      return;
+    }
+    const agent = this.catalog.get(session.agentId);
+    if (!agent?.launch) {
+      return;
+    }
+    this.restorePending = false;
+    this.sessions.activate(session.localId, true);
+    this.startConnection(agent, {
+      mode: "open",
+      session_id: session.remoteId,
+      replay: true,
+    });
   }
 
   private launchConnection(agent: AgentChoice, selection: HostSessionSelection): void {

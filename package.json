@@ -5,7 +5,7 @@
   "homepage": "https://brokk.ai",
   "icon": "icon.png",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.95.0"
