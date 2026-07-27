@@ -4,6 +4,7 @@
 /artifacts/
 /bin/
 /licenses/
+/source/
 *.vsix
 .DS_Store
 /.bifrost/

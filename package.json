@@ -10,7 +10,13 @@
   "bugs": {
     "url": "https://github.com/BrokkAi/brokk-vscode-acp/issues"
   },
+  "author": "BrokkAi",
   "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#181a1b",
+    "theme": "dark"
+  },
+  "pricing": "Free",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
   "version": "0.3.8",
   "license": "GPL-3.0-only",
@@ -33,7 +39,12 @@
     "licenses/**",
     "LICENSE",
     "README.md",
-    "THIRD_PARTY_NOTICES.md"
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "SOURCE.md",
+    "SUPPORT.md",
+    "THIRD_PARTY_NOTICES.md",
+    "source/**"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -131,10 +142,14 @@
     "compile:rust:release": "cargo build --release --package brokk-acp-host",
     "compile:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
     "check": "tsc --noEmit && cargo check --workspace",
+    "test": "npm run check && cargo test --workspace --locked && npm run test:markdown && npm run test:webview-layout && npm run test:plans && npm run test:lifecycle && npm run release:check",
     "test:markdown": "node scripts/test-markdown.mjs",
     "test:plans": "node scripts/test-plans.mjs",
     "test:webview-layout": "node scripts/test-webview-layout.mjs",
     "test:lifecycle": "cargo build --package brokk-acp-host && node scripts/test-connection-lifecycle.mjs",
+    "license:generate": "node scripts/generate-host-third-party-notices.mjs",
+    "license:check": "node scripts/generate-host-third-party-notices.mjs --check",
+    "release:check": "node scripts/check-release.mjs",
     "package": "node scripts/package.mjs",
     "watch": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
     "vscode:prepublish": "npm run compile:extension"

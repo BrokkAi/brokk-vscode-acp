@@ -1,4 +1,4 @@
-name: Package platform VSIX files
+name: Release platform VSIX files
 
 on:
   workflow_dispatch:
@@ -6,8 +6,41 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: brokk-acp-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - run: cargo install --locked cargo-about --version 0.9.1 --features cli
+      - run: cargo fetch --locked
+      - run: npm test
+      - run: npm run license:check
+      - name: Validate release tag and default-branch ancestry
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          npm run release:check -- --tag "$RELEASE_TAG"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+
   package:
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -30,6 +63,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -39,8 +74,65 @@ jobs:
           targets: ${{ matrix.rust_target }}
       - run: npm ci
       - run: npm run package -- --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: brokk-vscode-acp-${{ matrix.target }}
           path: artifacts/*.vsix
           if-no-files-found: error
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: brokk-vscode-acp-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify Marketplace credential
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::VSCE_PAT is not configured for this repository"
+            exit 1
+          fi
+      - name: Publish all platform packages
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --no-install vsce publish --skip-duplicate --packagePath artifacts/*.vsix
+
+  github-release:
+    if: github.ref_type == 'tag'
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: brokk-vscode-acp-*
+          path: artifacts
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" artifacts/*.vsix --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$RELEASE_TAG" artifacts/*.vsix \
+              --verify-tag \
+              --generate-notes \
+              --repo "$GITHUB_REPOSITORY"
+          fi
