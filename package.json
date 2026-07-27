@@ -3,9 +3,16 @@
   "displayName": "Brokk ACP",
   "publisher": "brokk",
   "homepage": "https://brokk.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BrokkAi/brokk-vscode-acp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BrokkAi/brokk-vscode-acp/issues"
+  },
   "icon": "icon.png",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "license": "GPL-3.0-only",
   "engines": {
     "vscode": "^1.95.0"
