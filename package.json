@@ -1,20 +1,42 @@
 {
   "name": "brokk-vscode-acp",
   "displayName": "Brokk ACP",
-  "description": "A Rust-powered Agent Client Protocol client for VS Code",
-  "version": "0.1.0",
+  "publisher": "Brokk",
+  "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.95.0"
   },
   "categories": ["Other", "Machine Learning"],
-  "activationEvents": ["onView:brokkAcp.chat"],
+  "keywords": ["acp", "agent", "coding", "brokk", "anvil"],
+  "activationEvents": [
+    "onView:brokkAcp.chat",
+    "onCommand:brokkAcp.connect",
+    "onCommand:brokkAcp.refreshAgents"
+  ],
   "main": "./dist/extension.js",
   "extensionKind": ["workspace"],
+  "files": [
+    "bin/**",
+    "dist/**",
+    "licenses/**",
+    "resources/**",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "ACP agents can read, edit, and run commands in the workspace."
+    }
+  },
   "contributes": {
     "commands": [
       { "command": "brokkAcp.connect", "title": "Brokk ACP: Connect" },
-      { "command": "brokkAcp.disconnect", "title": "Brokk ACP: Disconnect" }
+      { "command": "brokkAcp.disconnect", "title": "Brokk ACP: Disconnect" },
+      { "command": "brokkAcp.refreshAgents", "title": "Brokk ACP: Refresh Agent Registry" }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -29,16 +51,62 @@
     "configuration": {
       "title": "Brokk ACP",
       "properties": {
+        "brokkAcp.defaultAgent": {
+          "type": "string",
+          "default": "bundled:anvil",
+          "description": "Agent ID selected when a workspace first opens"
+        },
+        "brokkAcp.registry.url": {
+          "type": "string",
+          "default": "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json",
+          "description": "ACP registry index URL"
+        },
+        "brokkAcp.anvil.path": {
+          "type": "string",
+          "default": "",
+          "description": "Override the bundled Anvil executable"
+        },
+        "brokkAcp.customAgents": {
+          "type": "object",
+          "default": {},
+          "description": "Custom stdio ACP agents keyed by a stable ID",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["command"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Display name"
+              },
+              "command": {
+                "type": "string",
+                "description": "ACP agent executable"
+              },
+              "args": {
+                "type": "array",
+                "items": { "type": "string" },
+                "default": []
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": { "type": "string" },
+                "default": {}
+              }
+            }
+          }
+        },
         "brokkAcp.agent.command": {
           "type": "string",
           "default": "anvil",
-          "description": "ACP agent executable"
+          "description": "Legacy single custom ACP agent executable",
+          "markdownDeprecationMessage": "Use `brokkAcp.customAgents` instead."
         },
         "brokkAcp.agent.args": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Arguments passed to the ACP agent"
+          "description": "Legacy arguments passed to the single custom ACP agent",
+          "markdownDeprecationMessage": "Use `brokkAcp.customAgents` instead."
         },
         "brokkAcp.host.path": {
           "type": "string",
@@ -51,15 +119,19 @@
   "scripts": {
     "compile": "npm run compile:rust && npm run compile:extension",
     "compile:rust": "cargo build --package brokk-acp-host",
+    "compile:rust:release": "cargo build --release --package brokk-acp-host",
     "compile:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
     "check": "tsc --noEmit && cargo check --workspace",
+    "package": "node scripts/package.mjs",
     "watch": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js --watch",
-    "vscode:prepublish": "npm run compile"
+    "vscode:prepublish": "npm run compile:extension"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",
+    "extract-zip": "^2.0.1",
     "typescript": "^5.8.0"
   }
 }

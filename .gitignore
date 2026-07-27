@@ -1,6 +1,9 @@
 /node_modules/
 /dist/
 /target/
+/artifacts/
+/bin/
+/licenses/
 *.vsix
 .DS_Store
 /.bifrost/

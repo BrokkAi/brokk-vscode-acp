@@ -1,0 +1,46 @@
+name: Package platform VSIX files
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+          - os: macos-latest
+            target: darwin-x64
+            rust_target: x86_64-apple-darwin
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: linux-x64
+            rust_target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+      - run: npm ci
+      - run: npm run package -- --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: brokk-vscode-acp-${{ matrix.target }}
+          path: artifacts/*.vsix
+          if-no-files-found: error
