@@ -511,6 +511,70 @@ export function webviewHtml(webview: vscode.Webview): string {
       padding: 8px 9px 9px;
       background: linear-gradient(transparent, var(--vscode-sideBar-background, var(--vscode-editor-background)) 10px);
     }
+    .slash-menu {
+      width: 100%;
+      max-width: 720px;
+      max-height: min(260px, 42vh);
+      margin: 0 auto 6px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      border: 1px solid var(--vscode-widget-border, var(--border));
+      border-radius: 7px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      box-shadow: 0 6px 18px color-mix(in srgb, #000 24%, transparent);
+    }
+    .slash-command {
+      width: 100%;
+      display: block;
+      padding: 6px 9px 7px;
+      border-radius: 0;
+      background: transparent;
+      text-align: left;
+    }
+    .slash-command + .slash-command {
+      border-top: 1px solid var(--muted-border);
+    }
+    .slash-command:hover,
+    .slash-command.selected {
+      background: var(--vscode-list-activeSelectionBackground, var(--accent-soft));
+      color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground));
+    }
+    .slash-command-line {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      min-width: 0;
+    }
+    .slash-command-name {
+      flex: none;
+      color: var(--vscode-symbolIcon-functionForeground, var(--vscode-textLink-foreground));
+      font: 600 11.5px/1.35 var(--vscode-editor-font-family, monospace);
+    }
+    .slash-command.selected .slash-command-name {
+      color: inherit;
+    }
+    .slash-command-hint {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--vscode-descriptionForeground);
+      font: 10px/1.35 var(--vscode-editor-font-family, monospace);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .slash-command-description {
+      display: block;
+      margin-top: 1px;
+      overflow: hidden;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10.5px;
+      line-height: 1.35;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .slash-command.selected .slash-command-hint,
+    .slash-command.selected .slash-command-description {
+      color: color-mix(in srgb, currentColor 72%, transparent);
+    }
     .composer {
       width: 100%;
       max-width: 720px;
@@ -718,8 +782,9 @@ export function webviewHtml(webview: vscode.Webview): string {
         </div>
         <div id="transcript" class="transcript"><div id="transcript-inner" class="transcript-inner"></div></div>
         <div class="composer-wrap">
+          <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Available agent commands"></div>
           <div class="composer">
-            <textarea id="prompt" rows="2" placeholder="Ask the agent…"></textarea>
+            <textarea id="prompt" rows="2" placeholder="Ask the agent…" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
             <div class="composer-footer">
               <span id="composer-hint" class="composer-hint">⌘↵ to send</span>
               <button id="send-button" class="send-button" title="Send" aria-label="Send">↑</button>
@@ -748,11 +813,14 @@ export function webviewHtml(webview: vscode.Webview): string {
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
       'install-row', 'start-button', 'browse-button', 'config-bar', 'transcript',
       'transcript-inner', 'prompt', 'composer-hint', 'send-button', 'stop-button', 'banner',
-      'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
+      'slash-menu', 'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
     let appState = { agents: [], selectedAgent: '', connection: { phase: 'idle' }, sessions: [] };
     let drawerOpen = false;
     let renderPending = false;
+    let slashMatches = [];
+    let slashSelected = 0;
+    let slashDismissedValue;
     const expandedEntries = new Set();
 
     function selectedAgent() {
@@ -1162,7 +1230,166 @@ export function webviewHtml(webview: vscode.Webview): string {
       elements['send-button'].classList.toggle('hidden', running);
       elements['stop-button'].classList.toggle('hidden', !running);
       elements['send-button'].disabled = !ready || !elements.prompt.value.trim();
-      elements['composer-hint'].textContent = usageLabel(active.usage) || (running ? 'Agent is working…' : '⌘↵ to send');
+      elements['composer-hint'].textContent = defaultComposerHint(active);
+      updateSlashMenu(active);
+    }
+
+    function defaultComposerHint(active) {
+      return usageLabel(active?.usage) ||
+        (active?.status === 'running' ? 'Agent is working…' : '⌘↵ to send');
+    }
+
+    function advertisedSlashCommands(active) {
+      const commands = [];
+      const seen = new Set();
+      for (const value of Array.isArray(active?.availableCommands) ? active.availableCommands : []) {
+        if (!value || typeof value !== 'object' || typeof value.name !== 'string') continue;
+        const name = value.name.trim().replace(/^\\/+/, '');
+        const key = name.toLocaleLowerCase();
+        if (!name || /\\s/.test(name) || seen.has(key)) continue;
+        seen.add(key);
+        const description = typeof value.description === 'string' ? value.description.trim() : '';
+        const inputHint =
+          value.input && typeof value.input === 'object' && typeof value.input.hint === 'string'
+            ? value.input.hint.trim()
+            : '';
+        commands.push({ name, description, inputHint });
+      }
+      return commands;
+    }
+
+    function slashQuery() {
+      const value = elements.prompt.value;
+      if (
+        !value.startsWith('/') ||
+        /\\s/.test(value.slice(1)) ||
+        elements.prompt.selectionStart !== value.length ||
+        elements.prompt.selectionEnd !== value.length
+      ) {
+        return;
+      }
+      return value.slice(1).toLocaleLowerCase();
+    }
+
+    function updateSlashMenu(active) {
+      const query = slashQuery();
+      const previousName = slashMatches[slashSelected]?.name;
+      if (
+        active?.status !== 'ready' ||
+        document.activeElement !== elements.prompt ||
+        query === undefined ||
+        slashDismissedValue === elements.prompt.value
+      ) {
+        slashMatches = [];
+        slashSelected = 0;
+        drawSlashMenu();
+        return;
+      }
+
+      const commands = advertisedSlashCommands(active);
+      const prefixMatches = commands.filter(command =>
+        command.name.toLocaleLowerCase().startsWith(query)
+      );
+      slashMatches = prefixMatches.length
+        ? prefixMatches
+        : commands.filter(command => command.name.toLocaleLowerCase().includes(query));
+      const previousIndex = previousName
+        ? slashMatches.findIndex(command => command.name === previousName)
+        : -1;
+      slashSelected = previousIndex >= 0 ? previousIndex : 0;
+      drawSlashMenu();
+    }
+
+    function drawSlashMenu() {
+      const menu = elements['slash-menu'];
+      menu.replaceChildren();
+      menu.classList.toggle('hidden', slashMatches.length === 0);
+      elements.prompt.setAttribute('aria-expanded', String(slashMatches.length > 0));
+      if (!slashMatches.length) {
+        elements.prompt.removeAttribute('aria-activedescendant');
+        elements['composer-hint'].textContent = defaultComposerHint(appState.active);
+        return;
+      }
+
+      slashMatches.forEach((command, index) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.id = 'slash-command-' + index;
+        item.className = 'slash-command' + (index === slashSelected ? ' selected' : '');
+        item.setAttribute('role', 'option');
+        item.setAttribute('aria-selected', String(index === slashSelected));
+        item.tabIndex = -1;
+
+        const line = document.createElement('span');
+        line.className = 'slash-command-line';
+        const name = document.createElement('span');
+        name.className = 'slash-command-name';
+        name.textContent = '/' + command.name;
+        line.appendChild(name);
+        if (command.inputHint) {
+          const hint = document.createElement('span');
+          hint.className = 'slash-command-hint';
+          hint.textContent = '<' + command.inputHint + '>';
+          line.appendChild(hint);
+        }
+        item.appendChild(line);
+        if (command.description) {
+          const description = document.createElement('span');
+          description.className = 'slash-command-description';
+          description.textContent = command.description;
+          item.appendChild(description);
+        }
+        item.onmousedown = event => event.preventDefault();
+        item.onmouseenter = () => selectSlashCommand(index);
+        item.onclick = () => acceptSlashCommand(index);
+        menu.appendChild(item);
+      });
+
+      selectSlashCommand(slashSelected);
+      elements['composer-hint'].textContent = '↑↓ navigate · Enter or Tab insert · Esc close';
+    }
+
+    function selectSlashCommand(index) {
+      const menu = elements['slash-menu'];
+      if (!slashMatches.length || index < 0 || index >= slashMatches.length) return;
+      slashSelected = index;
+      Array.from(menu.children).forEach((item, itemIndex) => {
+        item.classList.toggle('selected', itemIndex === slashSelected);
+        item.setAttribute('aria-selected', String(itemIndex === slashSelected));
+      });
+      const selected = menu.children[slashSelected];
+      if (selected) {
+        elements.prompt.setAttribute('aria-activedescendant', selected.id);
+        selected.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    function moveSlashSelection(delta) {
+      if (!slashMatches.length) return;
+      selectSlashCommand((slashSelected + delta + slashMatches.length) % slashMatches.length);
+    }
+
+    function acceptSlashCommand(index = slashSelected) {
+      const command = slashMatches[index];
+      if (!command) return;
+      elements.prompt.value = '/' + command.name + ' ';
+      slashMatches = [];
+      slashSelected = 0;
+      slashDismissedValue = elements.prompt.value;
+      drawSlashMenu();
+      autosizePrompt();
+      elements['send-button'].disabled = appState.active?.status !== 'ready';
+      elements.prompt.focus();
+      elements.prompt.setSelectionRange(elements.prompt.value.length, elements.prompt.value.length);
+      renderComposer(appState.active);
+    }
+
+    function dismissSlashMenu() {
+      slashDismissedValue = elements.prompt.value;
+      slashMatches = [];
+      slashSelected = 0;
+      drawSlashMenu();
+      renderComposer(appState.active);
     }
 
     function submitPrompt() {
@@ -1170,8 +1397,11 @@ export function webviewHtml(webview: vscode.Webview): string {
       if (!text || appState.active?.status !== 'ready') return;
       post('prompt', { text });
       elements.prompt.value = '';
+      slashDismissedValue = undefined;
+      slashMatches = [];
       autosizePrompt();
       elements['send-button'].disabled = true;
+      drawSlashMenu();
     }
 
     function renderMarkdown(target, text) {
@@ -1363,14 +1593,53 @@ export function webviewHtml(webview: vscode.Webview): string {
     elements['send-button'].onclick = submitPrompt;
     elements['stop-button'].onclick = () => post('cancel');
     elements.prompt.oninput = () => {
+      if (slashDismissedValue !== elements.prompt.value) {
+        slashDismissedValue = undefined;
+      }
       autosizePrompt();
       elements['send-button'].disabled = appState.active?.status !== 'ready' || !elements.prompt.value.trim();
+      updateSlashMenu(appState.active);
     };
     elements.prompt.onkeydown = event => {
+      if (slashMatches.length) {
+        const unmodified = !event.metaKey && !event.ctrlKey && !event.altKey;
+        if (event.key === 'ArrowDown' && unmodified) {
+          event.preventDefault();
+          moveSlashSelection(1);
+          return;
+        }
+        if (event.key === 'ArrowUp' && unmodified) {
+          event.preventDefault();
+          moveSlashSelection(-1);
+          return;
+        }
+        if (event.key === 'Tab' && unmodified && !event.shiftKey) {
+          event.preventDefault();
+          acceptSlashCommand();
+          return;
+        }
+        if (event.key === 'Enter' && unmodified && !event.shiftKey) {
+          event.preventDefault();
+          acceptSlashCommand();
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          dismissSlashMenu();
+          return;
+        }
+      }
       if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         submitPrompt();
       }
+    };
+    elements.prompt.onselect = () => updateSlashMenu(appState.active);
+    elements.prompt.onfocus = () => updateSlashMenu(appState.active);
+    elements.prompt.onblur = () => {
+      slashMatches = [];
+      slashSelected = 0;
+      drawSlashMenu();
     };
 
     window.addEventListener('message', ({ data }) => {
