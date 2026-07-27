@@ -398,7 +398,9 @@ export class SessionStore {
       if (this.replaying && this.replayBackup) {
         session.entries = this.replayBackup;
       }
-      session.status = "disconnected";
+      if (session.status !== "error") {
+        session.status = "disconnected";
+      }
       this.touch(session);
     }
     this.activeTurnId = undefined;

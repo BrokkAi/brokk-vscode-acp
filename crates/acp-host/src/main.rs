@@ -2,9 +2,10 @@ mod client_io;
 mod registry;
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::OnceLock;
+use std::process::{ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
@@ -24,8 +25,8 @@ use client_io::{PermissionBroker, WorkspaceIo};
 use registry::{DEFAULT_REGISTRY_URL, LaunchSpec};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{ChildStderr, Command};
 use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -33,6 +34,7 @@ static EVENTS: OnceLock<mpsc::UnboundedSender<Value>> = OnceLock::new();
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
 const SESSION_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(60);
 const SESSION_LIST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_AGENT_STDERR_BYTES: usize = 12 * 1024;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -265,9 +267,15 @@ async fn run(mut commands: mpsc::UnboundedReceiver<HostCommand>) -> Result<()> {
                         let connection_finished = finished_tx.clone();
                         let task = tokio::spawn(async move {
                             let result =
-                                run_connection(launch, cwd, session, &mut connection_command_rx)
-                                    .await
-                                    .map_err(|error| format!("{error:#}"));
+                                run_connection(
+                                    connection_id,
+                                    launch,
+                                    cwd,
+                                    session,
+                                    &mut connection_command_rx,
+                                )
+                                .await
+                                .map_err(|error| format!("{error:#}"));
                             let _ = connection_finished.send(ConnectionFinished {
                                 id: connection_id,
                                 result,
@@ -384,6 +392,7 @@ async fn emit_error(error: anyhow::Error) -> Result<()> {
 }
 
 async fn run_connection(
+    connection_id: u64,
     launch: LaunchSpec,
     cwd: PathBuf,
     session: SessionSelection,
@@ -397,32 +406,68 @@ async fn run_connection(
         .envs(&launch.env)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("could not start ACP agent `{}`", launch.command.display()))?;
     let child_stdin = child.stdin.take().context("agent stdin was not piped")?;
     let child_stdout = child.stdout.take().context("agent stdout was not piped")?;
+    let child_stderr = child.stderr.take().context("agent stderr was not piped")?;
+    let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+    let stderr_task = tokio::spawn(capture_agent_stderr(child_stderr, stderr_tail.clone()));
     let transport = ByteStreams::new(child_stdin.compat_write(), child_stdout.compat());
 
-    let result = drive_client(
+    emit(&json!({
+        "type": "connection_progress",
+        "connection_id": connection_id,
+        "stage": "initialize",
+        "message": "Agent process started. Waiting for the ACP handshake…",
+    }))
+    .await?;
+
+    let client = drive_client(
         transport,
+        connection_id,
         cwd,
         launch,
         session,
         commands,
         workspace.clone(),
         permissions.clone(),
-    )
-    .await;
+    );
+    tokio::pin!(client);
+
+    enum ConnectionOutcome {
+        Client(Result<()>),
+        AgentExited(std::io::Result<ExitStatus>),
+    }
+
+    let outcome = tokio::select! {
+        biased;
+        status = child.wait() => ConnectionOutcome::AgentExited(status),
+        result = &mut client => ConnectionOutcome::Client(result),
+    };
+
     permissions.cancel_all().await;
     workspace.shutdown().await;
-    let _ = child.kill().await;
+    let result = match outcome {
+        ConnectionOutcome::Client(result) => {
+            let _ = child.kill().await;
+            let _ = stderr_task.await;
+            result
+        }
+        ConnectionOutcome::AgentExited(status) => {
+            let _ = stderr_task.await;
+            let status = status.context("could not read ACP agent exit status")?;
+            Err(agent_exit_error(status, &stderr_tail))
+        }
+    };
     result
 }
 
 async fn drive_client<T>(
     transport: T,
+    connection_id: u64,
     cwd: PathBuf,
     launch: LaunchSpec,
     session: SessionSelection,
@@ -523,12 +568,20 @@ where
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
-            drive_session(connection, cwd, launch, session, commands, permissions)
-                .await
-                .map_err(|error| {
-                    agent_client_protocol::Error::internal_error()
-                        .data(Value::String(format!("{error:#}")))
-                })
+            drive_session(
+                connection,
+                connection_id,
+                cwd,
+                launch,
+                session,
+                commands,
+                permissions,
+            )
+            .await
+            .map_err(|error| {
+                agent_client_protocol::Error::internal_error()
+                    .data(Value::String(format!("{error:#}")))
+            })
         })
         .await
         .map_err(|error| anyhow!("ACP connection failed: {error}"))
@@ -536,6 +589,7 @@ where
 
 async fn drive_session(
     connection: ConnectionTo<Agent>,
+    connection_id: u64,
     cwd: PathBuf,
     launch: LaunchSpec,
     initial_session: SessionSelection,
@@ -567,6 +621,7 @@ async fn drive_session(
 
     emit(&json!({
         "type": "connected",
+        "connection_id": connection_id,
         "agent": response.agent_info.map(|info| info.name),
         "protocol_version": response.protocol_version,
         "agent_capabilities": agent_capabilities,
@@ -576,6 +631,12 @@ async fn drive_session(
 
     let mut active_session = match initial_session {
         SessionSelection::Browse => {
+            emit_connection_progress(
+                connection_id,
+                "sessions",
+                "ACP connected. Loading available sessions…",
+            )
+            .await?;
             report_session_list(&connection, &cwd, &agent_capabilities).await?;
             None
         }
@@ -587,6 +648,7 @@ async fn drive_session(
                 &auth_methods,
                 &agent_capabilities,
                 selection,
+                connection_id,
                 commands,
             )
             .await?
@@ -603,6 +665,7 @@ async fn drive_session(
                     &auth_methods,
                     &agent_capabilities,
                     SessionSelection::New,
+                    connection_id,
                     commands,
                 )
                 .await?;
@@ -615,6 +678,7 @@ async fn drive_session(
                     &auth_methods,
                     &agent_capabilities,
                     SessionSelection::Open { session_id, replay },
+                    connection_id,
                     commands,
                 )
                 .await?;
@@ -765,10 +829,21 @@ async fn start_session(
     auth_methods: &[AuthMethod],
     capabilities: &AgentCapabilities,
     selection: SessionSelection,
+    connection_id: u64,
     commands: &mut mpsc::UnboundedReceiver<HostCommand>,
 ) -> Result<Option<ActiveSession>> {
-    let (requested_id, replay) = match &selection {
+    let progress_message = match &selection {
         SessionSelection::Browse => return Ok(None),
+        SessionSelection::New => "ACP connected. Creating a new session…",
+        SessionSelection::Open { replay: true, .. } => {
+            "ACP connected. Loading the session and transcript…"
+        }
+        SessionSelection::Open { .. } => "ACP connected. Resuming the session…",
+    };
+    emit_connection_progress(connection_id, "session", progress_message).await?;
+
+    let (requested_id, replay) = match &selection {
+        SessionSelection::Browse => unreachable!(),
         SessionSelection::New => (None, false),
         SessionSelection::Open { session_id, replay } => (Some(session_id.clone()), *replay),
     };
@@ -950,6 +1025,56 @@ async fn start_session(
                 }
             }
         }
+    }
+}
+
+async fn emit_connection_progress(connection_id: u64, stage: &str, message: &str) -> Result<()> {
+    emit(&json!({
+        "type": "connection_progress",
+        "connection_id": connection_id,
+        "stage": stage,
+        "message": message,
+    }))
+    .await
+}
+
+async fn capture_agent_stderr(mut stderr: ChildStderr, tail: Arc<Mutex<Vec<u8>>>) {
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let read = match stderr.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) => {
+                eprintln!("could not read ACP agent stderr: {error}");
+                break;
+            }
+        };
+        let bytes = &buffer[..read];
+        let _ = std::io::stderr().write_all(bytes);
+        if let Ok(mut tail) = tail.lock() {
+            tail.extend_from_slice(bytes);
+            if tail.len() > MAX_AGENT_STDERR_BYTES {
+                let excess = tail.len() - MAX_AGENT_STDERR_BYTES;
+                tail.drain(..excess);
+            }
+        }
+    }
+}
+
+fn agent_exit_error(status: ExitStatus, stderr_tail: &Arc<Mutex<Vec<u8>>>) -> anyhow::Error {
+    let status = status
+        .code()
+        .map(|code| format!("exit code {code}"))
+        .unwrap_or_else(|| "a signal".to_owned());
+    let output = stderr_tail
+        .lock()
+        .ok()
+        .map(|tail| String::from_utf8_lossy(&tail).trim().to_owned())
+        .unwrap_or_default();
+    if output.is_empty() {
+        anyhow!("ACP agent exited unexpectedly with {status}")
+    } else {
+        anyhow!("ACP agent exited unexpectedly with {status}.\n\nAgent output:\n{output}")
     }
 }
 
