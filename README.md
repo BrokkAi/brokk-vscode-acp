@@ -14,9 +14,13 @@ agents instead of coupling the editor to one provider.
 
 ## Brokk ACP in action
 
-| Start any ACP agent | Work in a persistent coding session |
-| --- | --- |
-| ![Start an ACP session with bundled Anvil, a custom server, or a registry agent](docs/screenshots/new-session.png) | ![An active Anvil session with structured output and the persistent composer](docs/screenshots/active-session.png) |
+### Start any ACP agent
+
+![Start an ACP session with bundled Anvil, a custom server, or a registry agent](docs/screenshots/new-session.png)
+
+### Work in a persistent coding session
+
+![An active Anvil session with structured output and the persistent composer](docs/screenshots/active-session.png)
 
 Choose bundled Anvil, a custom stdio server, or an agent from the official ACP
 registry. Sessions keep configuration, structured agent activity, rendered
