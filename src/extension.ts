@@ -380,6 +380,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private readonly sessions: SessionStore;
   private readonly authMethods = new Map<string, EnvAuthMethod>();
   private connectionPhase: "idle" | "connecting" | "connected" = "idle";
+  private activeConnectionId: number | undefined;
   private connectedAgentId: string | undefined;
   private pendingConnection: PendingConnection | undefined;
   private capabilities: Record<string, unknown> | undefined;
@@ -423,6 +424,17 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   private handleHostEvent(event: HostEvent): void {
+    const eventConnectionId =
+      typeof event.connection_id === "number" ? event.connection_id : undefined;
+    if (
+      eventConnectionId !== undefined &&
+      this.activeConnectionId !== undefined &&
+      eventConnectionId !== this.activeConnectionId &&
+      (event.type === "error" || event.type === "disconnected")
+    ) {
+      return;
+    }
+
     switch (event.type) {
       case "catalog":
         this.catalog.updateOfficial(event.agents);
@@ -437,6 +449,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         this.banner = undefined;
         break;
       case "connecting":
+        this.activeConnectionId = eventConnectionId;
         this.connectionPhase = "connecting";
         this.sessions.setConnecting();
         this.banner = undefined;
@@ -462,6 +475,12 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         }
         break;
       }
+      case "session_list_error":
+        this.banner =
+          typeof event.message === "string"
+            ? `Session discovery failed: ${event.message}`
+            : "Session discovery failed for this agent.";
+        break;
       case "session_replay_started":
         if (typeof event.session_id === "string") {
           this.sessions.startReplay(event.session_id);
@@ -537,6 +556,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       }
       case "disconnected":
         this.connectionPhase = "idle";
+        this.activeConnectionId = undefined;
         this.sessions.disconnected();
         this.capabilities = undefined;
         this.auth = undefined;
@@ -548,6 +568,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         break;
       case "host_exited":
         this.connectionPhase = "idle";
+        this.activeConnectionId = undefined;
         this.connectedAgentId = undefined;
         this.sessions.disconnected();
         this.banner = "The Brokk ACP host exited.";

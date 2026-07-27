@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
@@ -29,6 +30,9 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 static EVENTS: OnceLock<mpsc::UnboundedSender<Value>> = OnceLock::new();
+const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(30);
+const SESSION_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(60);
+const SESSION_LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -180,48 +184,152 @@ async fn emit(value: &Value) -> Result<()> {
         .map_err(|_| anyhow!("extension output closed"))
 }
 
+struct ActiveConnection {
+    id: u64,
+    commands: mpsc::UnboundedSender<HostCommand>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct ConnectionFinished {
+    id: u64,
+    result: std::result::Result<(), String>,
+}
+
 async fn run(mut commands: mpsc::UnboundedReceiver<HostCommand>) -> Result<()> {
-    while let Some(command) = commands.recv().await {
-        match command {
-            HostCommand::ListAgents {
-                storage_dir,
-                registry_url,
-            } => {
-                if let Err(error) = list_agents(&registry_url, &storage_dir).await {
-                    emit_error(error).await?;
+    let (finished_tx, mut finished_rx) = mpsc::unbounded_channel::<ConnectionFinished>();
+    let mut active: Option<ActiveConnection> = None;
+    let mut next_connection_id = 1_u64;
+
+    loop {
+        tokio::select! {
+            command = commands.recv() => {
+                let Some(command) = command else {
+                    if let Some(connection) = active.take() {
+                        connection.task.abort();
+                    }
+                    break;
+                };
+                match command {
+                    HostCommand::ListAgents {
+                        storage_dir,
+                        registry_url,
+                    } => {
+                        tokio::spawn(async move {
+                            if let Err(error) = list_agents(&registry_url, &storage_dir).await {
+                                let _ = emit_error(error).await;
+                            }
+                        });
+                    }
+                    HostCommand::InstallAgent {
+                        agent_id,
+                        storage_dir,
+                        registry_url,
+                    } => {
+                        tokio::spawn(async move {
+                            if let Err(error) =
+                                install_agent(&registry_url, &storage_dir, &agent_id).await
+                            {
+                                let _ = emit_error(error).await;
+                            }
+                        });
+                    }
+                    HostCommand::Connect {
+                        command,
+                        args,
+                        cwd,
+                        env,
+                        session,
+                    } => {
+                        if let Some(connection) = active.take() {
+                            connection.task.abort();
+                            emit(&json!({
+                                "type": "disconnected",
+                                "connection_id": connection.id,
+                                "reason": "replaced",
+                            }))
+                            .await?;
+                        }
+
+                        let connection_id = next_connection_id;
+                        next_connection_id = next_connection_id.saturating_add(1);
+                        let launch = LaunchSpec { command, args, env };
+                        emit(&json!({
+                            "type": "connecting",
+                            "connection_id": connection_id,
+                            "command": launch.command,
+                        }))
+                        .await?;
+
+                        let (connection_commands, mut connection_command_rx) =
+                            mpsc::unbounded_channel();
+                        let connection_finished = finished_tx.clone();
+                        let task = tokio::spawn(async move {
+                            let result =
+                                run_connection(launch, cwd, session, &mut connection_command_rx)
+                                    .await
+                                    .map_err(|error| format!("{error:#}"));
+                            let _ = connection_finished.send(ConnectionFinished {
+                                id: connection_id,
+                                result,
+                            });
+                        });
+                        active = Some(ActiveConnection {
+                            id: connection_id,
+                            commands: connection_commands,
+                            task,
+                        });
+                    }
+                    HostCommand::Disconnect => {
+                        if let Some(connection) = active.take() {
+                            connection.task.abort();
+                            emit(&json!({
+                                "type": "disconnected",
+                                "connection_id": connection.id,
+                                "reason": "requested",
+                            }))
+                            .await?;
+                        }
+                    }
+                    command => {
+                        let Some(connection) = active.as_ref() else {
+                            emit(&json!({
+                                "type": "error",
+                                "message": "connect to an ACP agent before sending session commands"
+                            }))
+                            .await?;
+                            continue;
+                        };
+                        if connection.commands.send(command).is_err() {
+                            emit(&json!({
+                                "type": "error",
+                                "connection_id": connection.id,
+                                "message": "the ACP connection is no longer accepting commands"
+                            }))
+                            .await?;
+                        }
+                    }
                 }
             }
-            HostCommand::InstallAgent {
-                agent_id,
-                storage_dir,
-                registry_url,
-            } => {
-                if let Err(error) = install_agent(&registry_url, &storage_dir, &agent_id).await {
-                    emit_error(error).await?;
+            finished = finished_rx.recv() => {
+                let Some(finished) = finished else {
+                    continue;
+                };
+                if active.as_ref().is_none_or(|connection| connection.id != finished.id) {
+                    continue;
                 }
-            }
-            HostCommand::Connect {
-                command,
-                args,
-                cwd,
-                env,
-                session,
-            } => {
-                let launch = LaunchSpec { command, args, env };
+                active = None;
+                if let Err(message) = finished.result {
+                    emit(&json!({
+                        "type": "error",
+                        "connection_id": finished.id,
+                        "message": message,
+                    }))
+                    .await?;
+                }
                 emit(&json!({
-                    "type": "connecting",
-                    "command": launch.command,
-                }))
-                .await?;
-                if let Err(error) = run_connection(launch, cwd, session, &mut commands).await {
-                    emit_error(error).await?;
-                }
-                emit(&json!({ "type": "disconnected" })).await?;
-            }
-            _ => {
-                emit(&json!({
-                    "type": "error",
-                    "message": "connect to an ACP agent before sending session commands"
+                    "type": "disconnected",
+                    "connection_id": finished.id,
+                    "reason": "closed",
                 }))
                 .await?;
             }
@@ -449,8 +557,10 @@ async fn drive_session(
                 ))
                 .client_capabilities(capabilities),
         )
-        .block_task()
+        .block_task();
+    let response = tokio::time::timeout(INITIALIZE_TIMEOUT, response)
         .await
+        .context("agent initialize timed out")?
         .context("agent rejected initialize")?;
     let auth_methods = response.auth_methods.clone();
     let agent_capabilities = response.agent_capabilities.clone();
@@ -464,10 +574,11 @@ async fn drive_session(
     }))
     .await?;
 
-    refresh_sessions(&connection, &cwd, &agent_capabilities).await?;
-
     let mut active_session = match initial_session {
-        SessionSelection::Browse => None,
+        SessionSelection::Browse => {
+            report_session_list(&connection, &cwd, &agent_capabilities).await?;
+            None
+        }
         selection => {
             start_session(
                 &connection,
@@ -495,7 +606,6 @@ async fn drive_session(
                     commands,
                 )
                 .await?;
-                refresh_sessions(&connection, &cwd, &agent_capabilities).await?;
             }
             HostCommand::OpenSession { session_id, replay } => {
                 active_session = start_session(
@@ -510,7 +620,7 @@ async fn drive_session(
                 .await?;
             }
             HostCommand::RefreshSessions => {
-                refresh_sessions(&connection, &cwd, &agent_capabilities).await?;
+                report_session_list(&connection, &cwd, &agent_capabilities).await?;
             }
             HostCommand::DeleteSession { session_id } => {
                 if active_session
@@ -525,7 +635,7 @@ async fn drive_session(
                     continue;
                 }
                 delete_session(&connection, &session_id, &agent_capabilities).await?;
-                refresh_sessions(&connection, &cwd, &agent_capabilities).await?;
+                report_session_list(&connection, &cwd, &agent_capabilities).await?;
             }
             HostCommand::Prompt { text } => {
                 let Some(session) = active_session.as_ref() else {
@@ -602,15 +712,19 @@ async fn drive_session(
                 };
                 let value: SessionConfigOptionValue =
                     serde_json::from_value(value).context("invalid session configuration value")?;
-                let response = connection
-                    .send_request(SetSessionConfigOptionRequest::new(
-                        session.id.clone(),
-                        config_id,
-                        value,
-                    ))
-                    .block_task()
-                    .await
-                    .context("agent rejected session configuration change")?;
+                let response = tokio::time::timeout(
+                    SESSION_LIFECYCLE_TIMEOUT,
+                    connection
+                        .send_request(SetSessionConfigOptionRequest::new(
+                            session.id.clone(),
+                            config_id,
+                            value,
+                        ))
+                        .block_task(),
+                )
+                .await
+                .context("agent session/set_config_option timed out")?
+                .context("agent rejected session configuration change")?;
                 emit(&json!({
                     "type": "config_options",
                     "config_options": response.config_options,
@@ -670,54 +784,70 @@ async fn start_session(
     loop {
         let result = match &selection {
             SessionSelection::Browse => unreachable!(),
-            SessionSelection::New => connection
-                .send_request(NewSessionRequest::new(cwd.to_path_buf()))
-                .block_task()
+            SessionSelection::New => {
+                let response = tokio::time::timeout(
+                    SESSION_LIFECYCLE_TIMEOUT,
+                    connection
+                        .send_request(NewSessionRequest::new(cwd.to_path_buf()))
+                        .block_task(),
+                )
                 .await
-                .map(|response| {
+                .context("agent session/new timed out")?;
+                response.map(|response| {
                     (
                         response.session_id,
                         response.config_options,
                         response.modes,
                         "new",
                     )
-                }),
+                })
+            }
             SessionSelection::Open {
                 session_id,
                 replay: true,
-            } if capabilities.load_session => connection
-                .send_request(LoadSessionRequest::new(
-                    session_id.clone(),
-                    cwd.to_path_buf(),
-                ))
-                .block_task()
+            } if capabilities.load_session => {
+                let response = tokio::time::timeout(
+                    SESSION_LIFECYCLE_TIMEOUT,
+                    connection
+                        .send_request(LoadSessionRequest::new(
+                            session_id.clone(),
+                            cwd.to_path_buf(),
+                        ))
+                        .block_task(),
+                )
                 .await
-                .map(|response| {
+                .context("agent session/load timed out")?;
+                response.map(|response| {
                     (
                         SessionId::new(session_id.clone()),
                         response.config_options,
                         response.modes,
                         "load",
                     )
-                }),
+                })
+            }
             SessionSelection::Open { session_id, .. }
                 if capabilities.session_capabilities.resume.is_some() =>
             {
-                connection
-                    .send_request(ResumeSessionRequest::new(
-                        session_id.clone(),
-                        cwd.to_path_buf(),
-                    ))
-                    .block_task()
-                    .await
-                    .map(|response| {
-                        (
-                            SessionId::new(session_id.clone()),
-                            response.config_options,
-                            response.modes,
-                            "resume",
-                        )
-                    })
+                let response = tokio::time::timeout(
+                    SESSION_LIFECYCLE_TIMEOUT,
+                    connection
+                        .send_request(ResumeSessionRequest::new(
+                            session_id.clone(),
+                            cwd.to_path_buf(),
+                        ))
+                        .block_task(),
+                )
+                .await
+                .context("agent session/resume timed out")?;
+                response.map(|response| {
+                    (
+                        SessionId::new(session_id.clone()),
+                        response.config_options,
+                        response.modes,
+                        "resume",
+                    )
+                })
             }
             SessionSelection::Open { .. } => {
                 return Err(anyhow!(
@@ -767,11 +897,15 @@ async fn start_session(
                     };
                     match method {
                         AuthMethod::Agent(_) => {
-                            connection
-                                .send_request(AuthenticateRequest::new(method_id))
-                                .block_task()
-                                .await
-                                .context("agent authentication failed")?;
+                            tokio::time::timeout(
+                                SESSION_LIFECYCLE_TIMEOUT,
+                                connection
+                                    .send_request(AuthenticateRequest::new(method_id))
+                                    .block_task(),
+                            )
+                            .await
+                            .context("agent authenticate timed out")?
+                            .context("agent authentication failed")?;
                             emit(&json!({ "type": "authenticated" })).await?;
                             break;
                         }
@@ -843,8 +977,10 @@ async fn refresh_sessions(
                     .cwd(cwd.to_path_buf())
                     .cursor(cursor),
             )
-            .block_task()
+            .block_task();
+        let response = tokio::time::timeout(SESSION_LIST_TIMEOUT, response)
             .await
+            .context("agent session/list timed out")?
             .context("agent rejected session/list")?;
         sessions.extend(response.sessions);
         cursor = response.next_cursor;
@@ -860,6 +996,21 @@ async fn refresh_sessions(
     .await
 }
 
+async fn report_session_list(
+    connection: &ConnectionTo<Agent>,
+    cwd: &Path,
+    capabilities: &AgentCapabilities,
+) -> Result<()> {
+    if let Err(error) = refresh_sessions(connection, cwd, capabilities).await {
+        emit(&json!({
+            "type": "session_list_error",
+            "message": format!("{error:#}"),
+        }))
+        .await?;
+    }
+    Ok(())
+}
+
 async fn delete_session(
     connection: &ConnectionTo<Agent>,
     session_id: &str,
@@ -868,11 +1019,15 @@ async fn delete_session(
     if capabilities.session_capabilities.delete.is_none() {
         return Err(anyhow!("agent does not support session/delete"));
     }
-    connection
-        .send_request(DeleteSessionRequest::new(session_id.to_owned()))
-        .block_task()
-        .await
-        .context("agent rejected session/delete")?;
+    tokio::time::timeout(
+        SESSION_LIFECYCLE_TIMEOUT,
+        connection
+            .send_request(DeleteSessionRequest::new(session_id.to_owned()))
+            .block_task(),
+    )
+    .await
+    .context("agent session/delete timed out")?
+    .context("agent rejected session/delete")?;
     emit(&json!({
         "type": "session_deleted",
         "session_id": session_id,

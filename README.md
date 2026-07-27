@@ -121,6 +121,7 @@ Validation commands:
 ```bash
 cargo test --workspace --locked
 npm run check
+npm run test:lifecycle
 npm run compile
 ```
 
