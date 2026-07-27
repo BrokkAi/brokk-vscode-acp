@@ -1,6 +1,6 @@
-# BrokkAI ACP for VS Code
+# Brokk ACP for VS Code
 
-BrokkAI ACP is an open Agent Client Protocol client for Visual Studio Code. It
+Brokk ACP is an open Agent Client Protocol client for Visual Studio Code. It
 ships with Anvil as the zero-configuration default, discovers agents from the
 official ACP Registry, and accepts arbitrary custom stdio ACP servers.
 
@@ -16,14 +16,17 @@ official ACP Registry, and accepts arbitrary custom stdio ACP servers.
 - Any custom stdio ACP agent configured with a command, arguments, and
   environment.
 - ACP v1 initialization, agent, terminal, and environment-variable
-  authentication, session creation, streaming prompts, cancellation, and
-  dynamic session configuration.
+  authentication.
+- Durable workspace session history backed by ACP `session/list`,
+  `session/new`, `session/load`, `session/resume`, and `session/delete`.
+- Structured streaming transcripts for messages, thoughts, plans, tool calls,
+  permissions, usage, cancellation, and dynamic session configuration.
 - Permission requests, workspace-scoped text file access, and client-owned
   terminal execution.
-- Tool-call, thought, usage, plan, and other session updates forwarded to the
-  chat UI.
+- Session metadata and transcripts persist across VS Code reloads; reopening an
+  ACP session replays the authoritative history from the agent.
 
-The registry lists **agents** (ACP servers). BrokkAI ACP is the client that
+The registry lists **agents** (ACP servers). Brokk ACP is the client that
 installs and launches them.
 
 ## Architecture
@@ -50,9 +53,11 @@ the Rust client reusable by other BrokkAI frontends.
 
 1. Install the VSIX for the machine running the VS Code extension host.
 2. Open a folder or workspace.
-3. Open **BrokkAI ACP** in the Activity Bar.
+3. Open **Brokk ACP** in the Activity Bar.
 4. Choose bundled **Anvil**, a registry agent, or a custom agent.
-5. Install when required, connect, and send a prompt.
+5. Start a new session or reopen one from the session drawer.
+6. Prompt the agent; tool activity, plans, permissions, and output stay grouped
+   into the same turn.
 
 Binary registry agents are downloaded into VS Code's extension global-storage
 directory. Package agents use their version-pinned registry command through
@@ -136,7 +141,6 @@ VSIX files on tags.
 
 ## Next protocol surfaces
 
-The current implementation is enough for live agentic coding. Follow-up
-milestones are session list/load/fork UI, richer Markdown and diff rendering,
-image/resource attachments, ACP elicitation forms, multiple simultaneous
-sessions, and deeper workspace-aware context controls.
+Follow-up milestones are side-by-side simultaneous agents, session forking,
+image/resource attachments, ACP elicitation forms, clickable diff navigation,
+and deeper workspace-aware context controls.

@@ -1,9 +1,11 @@
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import * as vscode from "vscode";
+import { SessionRecord, SessionStore } from "./sessionStore";
+import { webviewHtml } from "./webview";
 
 type HostEvent = { type: string; [key: string]: unknown };
 
@@ -11,6 +13,12 @@ interface LaunchSpec {
   command: string;
   args: string[];
   env: Record<string, string>;
+}
+
+interface HostSessionSelection {
+  mode: "browse" | "new" | "open";
+  session_id?: string;
+  replay?: boolean;
 }
 
 interface CustomAgentConfig {
@@ -191,7 +199,10 @@ class AgentCatalog {
 class RustHost implements vscode.Disposable {
   private child: ChildProcessWithoutNullStreams | undefined;
   private currentLaunch: LaunchSpec | undefined;
-  private pendingReconnect: LaunchSpec | undefined;
+  private currentSession: HostSessionSelection = { mode: "browse" };
+  private pendingReconnect:
+    | { launch: LaunchSpec; session: HostSessionSelection }
+    | undefined;
   private readonly events = new vscode.EventEmitter<HostEvent>();
   private readonly output = vscode.window.createOutputChannel("Brokk ACP");
   readonly onEvent = this.events.event;
@@ -199,7 +210,7 @@ class RustHost implements vscode.Disposable {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   async listAgents(): Promise<void> {
-    await this.ensureStorage();
+    await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
     this.send({
       type: "list_agents",
       storage_dir: this.context.globalStorageUri.fsPath,
@@ -208,7 +219,7 @@ class RustHost implements vscode.Disposable {
   }
 
   async installAgent(agentId: string): Promise<void> {
-    await this.ensureStorage();
+    await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
     this.send({
       type: "install_agent",
       agent_id: agentId,
@@ -217,21 +228,21 @@ class RustHost implements vscode.Disposable {
     });
   }
 
-  connect(launch: LaunchSpec): void {
-    const workspace = workspacePath();
+  connect(launch: LaunchSpec, session: HostSessionSelection): void {
     this.currentLaunch = launch;
+    this.currentSession = session;
     this.send({
       type: "connect",
       command: launch.command,
       args: launch.args,
       env: launch.env,
-      cwd: workspace,
+      cwd: workspacePath(),
+      session,
     });
   }
 
   send(command: object): void {
-    const child = this.ensureStarted();
-    child.stdin.write(`${JSON.stringify(command)}\n`);
+    this.ensureStarted().stdin.write(`${JSON.stringify(command)}\n`);
   }
 
   disconnectSession(): void {
@@ -245,8 +256,11 @@ class RustHost implements vscode.Disposable {
       throw new Error("No ACP agent is connected.");
     }
     this.pendingReconnect = {
-      ...this.currentLaunch,
-      env: { ...this.currentLaunch.env, ...env },
+      launch: {
+        ...this.currentLaunch,
+        env: { ...this.currentLaunch.env, ...env },
+      },
+      session: this.currentSession,
     };
     this.disconnectSession();
   }
@@ -308,9 +322,9 @@ class RustHost implements vscode.Disposable {
         }
         this.events.fire(event);
         if (event.type === "disconnected" && this.pendingReconnect) {
-          const launch = this.pendingReconnect;
+          const pending = this.pendingReconnect;
           this.pendingReconnect = undefined;
-          setImmediate(() => this.connect(launch));
+          setImmediate(() => this.connect(pending.launch, pending.session));
         }
       } catch {
         this.events.fire({ type: "error", message: `Invalid host output: ${line}` });
@@ -340,10 +354,6 @@ class RustHost implements vscode.Disposable {
     terminal.show();
   }
 
-  private async ensureStorage(): Promise<void> {
-    await vscode.workspace.fs.createDirectory(this.context.globalStorageUri);
-  }
-
   private defaultExecutable(): string {
     const name = process.platform === "win32" ? "brokk-acp-host.exe" : "brokk-acp-host";
     const packaged = path.join(
@@ -359,47 +369,186 @@ class RustHost implements vscode.Disposable {
   }
 }
 
+interface PendingConnection {
+  agent: AgentChoice;
+  selection: HostSessionSelection;
+}
+
 class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private readonly subscription: vscode.Disposable;
+  private readonly sessions: SessionStore;
   private readonly authMethods = new Map<string, EnvAuthMethod>();
+  private connectionPhase: "idle" | "connecting" | "connected" = "idle";
+  private connectedAgentId: string | undefined;
+  private pendingConnection: PendingConnection | undefined;
+  private capabilities: Record<string, unknown> | undefined;
+  private auth: { message?: string; methods: unknown[] } | undefined;
+  private banner: string | undefined;
+  private showStart = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly host: RustHost,
     private readonly catalog: AgentCatalog,
   ) {
+    this.sessions = new SessionStore(context);
     this.subscription = host.onEvent((event) => this.handleHostEvent(event));
   }
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
     view.webview.options = { enableScripts: true };
-    view.webview.html = chatHtml(view.webview);
-    view.webview.onDidReceiveMessage((message) => this.handleMessage(message));
+    view.webview.html = webviewHtml(view.webview);
+    view.webview.onDidReceiveMessage((message) => void this.handleMessage(message));
   }
 
   dispose(): void {
     this.subscription.dispose();
   }
 
-  private handleHostEvent(event: HostEvent): void {
-    if (event.type === "catalog") {
-      this.catalog.updateOfficial(event.agents);
-      this.postCatalog(event.cached === true);
-      return;
+  async newSession(agentId?: string): Promise<void> {
+    const agent = this.catalog.get(agentId || this.catalog.defaultAgentId());
+    if (!agent?.launch) {
+      throw new Error("Choose an installed ACP agent.");
     }
-    if (event.type === "auth_required") {
-      this.authMethods.clear();
-      if (Array.isArray(event.auth_methods)) {
-        for (const method of event.auth_methods) {
-          if (isEnvAuthMethod(method)) {
-            this.authMethods.set(method.id, method);
+    if (this.sessions.active?.status === "running") {
+      throw new Error("Stop the active turn before starting another session.");
+    }
+    await this.catalog.select(agent.id);
+    this.sessions.create({ id: agent.id, name: agent.name }, workspacePath());
+    this.showStart = false;
+    this.startConnection(agent, { mode: "new" });
+  }
+
+  private handleHostEvent(event: HostEvent): void {
+    switch (event.type) {
+      case "catalog":
+        this.catalog.updateOfficial(event.agents);
+        break;
+      case "catalog_loading":
+        break;
+      case "installing_agent":
+        this.banner = "Installing ACP agent…";
+        break;
+      case "agent_installed":
+        this.banner = undefined;
+        break;
+      case "connecting":
+        this.connectionPhase = "connecting";
+        this.sessions.setConnecting();
+        this.banner = undefined;
+        break;
+      case "connected":
+        this.connectionPhase = "connected";
+        this.capabilities = isRecord(event.agent_capabilities)
+          ? event.agent_capabilities
+          : undefined;
+        this.sessions.setConnected(
+          typeof event.agent === "string" ? event.agent : undefined,
+          event.agent_capabilities,
+        );
+        break;
+      case "agent_sessions": {
+        const agent = this.connectedAgentId ? this.catalog.get(this.connectedAgentId) : undefined;
+        if (agent) {
+          this.sessions.mergeRemoteSessions(
+            { id: agent.id, name: agent.name },
+            workspacePath(),
+            event.sessions,
+          );
+        }
+        break;
+      }
+      case "session_replay_started":
+        break;
+      case "session_started":
+        if (typeof event.session_id === "string") {
+          this.sessions.setSessionStarted(
+            event.session_id,
+            typeof event.method === "string" ? event.method : "new",
+            event.config_options,
+            event.modes,
+          );
+        }
+        this.auth = undefined;
+        this.banner = undefined;
+        this.showStart = false;
+        break;
+      case "turn_started":
+        this.sessions.turnStarted();
+        break;
+      case "turn_completed":
+        this.sessions.turnCompleted(
+          typeof event.stop_reason === "string" ? event.stop_reason : undefined,
+          event.usage,
+        );
+        break;
+      case "session_update":
+        this.sessions.applySessionUpdate(event.update);
+        break;
+      case "config_options":
+        this.sessions.setConfigOptions(event.config_options);
+        break;
+      case "permission_request":
+        if (typeof event.request_id === "string") {
+          this.sessions.addPermission(event.request_id, event.tool_call, event.options);
+        }
+        break;
+      case "auth_required":
+        this.authMethods.clear();
+        if (Array.isArray(event.auth_methods)) {
+          for (const method of event.auth_methods) {
+            if (isEnvAuthMethod(method)) {
+              this.authMethods.set(method.id, method);
+            }
           }
         }
+        this.auth = {
+          message: typeof event.message === "string" ? event.message : undefined,
+          methods: Array.isArray(event.auth_methods) ? event.auth_methods : [],
+        };
+        break;
+      case "terminal_auth":
+        this.banner = "Finish signing in in the terminal, then choose Retry.";
+        break;
+      case "authenticated":
+        this.auth = undefined;
+        this.banner = "Signed in. Opening session…";
+        break;
+      case "session_deleted":
+        if (this.connectedAgentId && typeof event.session_id === "string") {
+          this.sessions.removeByRemoteId(this.connectedAgentId, event.session_id);
+        }
+        break;
+      case "error": {
+        const message = typeof event.message === "string" ? event.message : "Unknown ACP error";
+        if (this.sessions.active && !this.showStart) {
+          this.sessions.addError(message);
+        } else {
+          this.banner = message;
+        }
+        break;
       }
+      case "disconnected":
+        this.connectionPhase = "idle";
+        this.sessions.disconnected();
+        this.capabilities = undefined;
+        this.auth = undefined;
+        if (this.pendingConnection) {
+          const pending = this.pendingConnection;
+          this.pendingConnection = undefined;
+          setImmediate(() => this.launchConnection(pending.agent, pending.selection));
+        }
+        break;
+      case "host_exited":
+        this.connectionPhase = "idle";
+        this.connectedAgentId = undefined;
+        this.sessions.disconnected();
+        this.banner = "The Brokk ACP host exited.";
+        break;
     }
-    this.view?.webview.postMessage(event);
+    this.postState();
   }
 
   private async handleMessage(message: unknown): Promise<void> {
@@ -409,41 +558,63 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     try {
       switch (message.type) {
         case "ready":
-          this.postCatalog(false);
-          await this.host.listAgents();
-          break;
-        case "refresh":
+          this.postState();
           await this.host.listAgents();
           break;
         case "select_agent":
           if (typeof message.agent_id === "string") {
             await this.catalog.select(message.agent_id);
+            this.postState();
           }
           break;
         case "install":
+          await this.installAgent(message.agent_id);
+          break;
+        case "show_start":
+          if (this.sessions.active?.status === "running") {
+            throw new Error("Stop the active turn before leaving this session.");
+          }
+          this.showStart = true;
+          this.banner = undefined;
+          this.postState();
+          break;
+        case "new_session":
           if (typeof message.agent_id === "string") {
-            const agent = this.catalog.get(message.agent_id);
-            if (agent?.source === "registry" && agent.registryId) {
-              await this.host.installAgent(agent.registryId);
-            }
+            await this.newSession(message.agent_id);
           }
           break;
-        case "connect":
+        case "browse_sessions":
           if (typeof message.agent_id === "string") {
-            const agent = this.catalog.get(message.agent_id);
-            if (!agent?.launch) {
-              throw new Error("Install this agent before connecting.");
-            }
+            const agent = this.requireLaunchableAgent(message.agent_id);
             await this.catalog.select(agent.id);
-            this.host.connect(agent.launch);
+            this.showStart = true;
+            this.startConnection(agent, { mode: "browse" });
           }
           break;
-        case "disconnect":
-          this.host.disconnectSession();
+        case "open_session":
+          if (typeof message.local_id === "string") {
+            await this.openSession(message.local_id);
+          }
+          break;
+        case "refresh_sessions":
+          if (this.connectionPhase === "connected") {
+            this.host.send({ type: "refresh_sessions" });
+          } else {
+            const agent = this.requireLaunchableAgent(this.catalog.defaultAgentId());
+            this.startConnection(agent, { mode: "browse" });
+          }
+          break;
+        case "delete_session":
+          if (typeof message.local_id === "string") {
+            await this.deleteSession(message.local_id);
+          }
           break;
         case "prompt":
           if (typeof message.text === "string" && message.text.trim()) {
-            this.host.send({ type: "prompt", text: message.text.trim() });
+            const text = message.text.trim();
+            this.sessions.beginTurn(text);
+            this.postState();
+            this.host.send({ type: "prompt", text });
           }
           break;
         case "cancel":
@@ -451,10 +622,13 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           break;
         case "permission_response":
           if (typeof message.request_id === "string") {
+            const optionId = typeof message.option_id === "string" ? message.option_id : null;
+            this.sessions.resolvePermission(message.request_id, optionId);
+            this.postState();
             this.host.send({
               type: "permission_response",
               request_id: message.request_id,
-              option_id: typeof message.option_id === "string" ? message.option_id : null,
+              option_id: optionId,
             });
           }
           break;
@@ -483,17 +657,133 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       }
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      this.banner = text;
+      this.postState();
       void vscode.window.showErrorMessage(text);
-      this.view?.webview.postMessage({ type: "error", message: text });
     }
   }
 
-  private postCatalog(cached: boolean): void {
+  private startConnection(agent: AgentChoice, selection: HostSessionSelection): void {
+    if (!agent.launch) {
+      throw new Error("Install this ACP agent before connecting.");
+    }
+    const sameAgent = this.connectedAgentId === agent.id;
+    if (this.connectionPhase === "connected" && sameAgent) {
+      if (selection.mode === "new") {
+        this.host.send({ type: "new_session" });
+      } else if (selection.mode === "open" && selection.session_id) {
+        this.host.send({
+          type: "open_session",
+          session_id: selection.session_id,
+          replay: selection.replay !== false,
+        });
+      } else {
+        this.host.send({ type: "refresh_sessions" });
+      }
+      this.postState();
+      return;
+    }
+    if (this.connectionPhase !== "idle") {
+      this.pendingConnection = { agent, selection };
+      this.host.disconnectSession();
+      return;
+    }
+    this.launchConnection(agent, selection);
+  }
+
+  private launchConnection(agent: AgentChoice, selection: HostSessionSelection): void {
+    if (!agent.launch) {
+      throw new Error("Install this ACP agent before connecting.");
+    }
+    this.connectionPhase = "connecting";
+    this.connectedAgentId = agent.id;
+    this.capabilities = undefined;
+    this.banner = undefined;
+    this.host.connect(agent.launch, selection);
+    this.postState();
+  }
+
+  private async openSession(localId: string): Promise<void> {
+    const session = this.sessions.get(localId);
+    if (!session) {
+      throw new Error("This session is no longer available.");
+    }
+    this.showStart = false;
+    if (!session.remoteId) {
+      this.sessions.activate(localId);
+      this.banner = "This locally cached session has no ACP session ID and cannot be resumed.";
+      this.postState();
+      return;
+    }
+    const agent = this.requireLaunchableAgent(session.agentId);
+    this.sessions.activate(localId, true);
+    this.startConnection(agent, {
+      mode: "open",
+      session_id: session.remoteId,
+      replay: true,
+    });
+  }
+
+  private async deleteSession(localId: string): Promise<void> {
+    const session = this.sessions.get(localId);
+    if (!session?.remoteId) {
+      return;
+    }
+    if (
+      this.connectionPhase !== "connected" ||
+      this.connectedAgentId !== session.agentId
+    ) {
+      throw new Error("Connect to this session's agent before deleting it.");
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `Delete “${session.title}” from ${session.agentName}?`,
+      { modal: true },
+      "Delete",
+    );
+    if (answer === "Delete") {
+      this.host.send({ type: "delete_session", session_id: session.remoteId });
+    }
+  }
+
+  private async installAgent(agentId: unknown): Promise<void> {
+    if (typeof agentId !== "string") {
+      return;
+    }
+    const agent = this.catalog.get(agentId);
+    if (agent?.source === "registry" && agent.registryId) {
+      await this.host.installAgent(agent.registryId);
+    }
+  }
+
+  private requireLaunchableAgent(agentId: string): AgentChoice {
+    const agent = this.catalog.get(agentId);
+    if (!agent?.launch) {
+      throw new Error("Install this ACP agent before connecting.");
+    }
+    return agent;
+  }
+
+  private postState(): void {
+    const sessionState = this.sessions.snapshot();
+    const sessionCapabilities = isRecord(this.capabilities?.sessionCapabilities)
+      ? this.capabilities.sessionCapabilities
+      : undefined;
     this.view?.webview.postMessage({
-      type: "catalog",
-      agents: this.catalog.publicList(),
-      selected_agent: this.catalog.defaultAgentId(),
-      cached,
+      type: "app_state",
+      state: {
+        agents: this.catalog.publicList(),
+        selectedAgent: this.catalog.defaultAgentId(),
+        active: this.showStart ? undefined : sessionState.active,
+        sessions: sessionState.sessions,
+        connection: {
+          phase: this.connectionPhase,
+          agentId: this.connectedAgentId,
+          canList: sessionCapabilities?.list !== undefined,
+          canDelete: sessionCapabilities?.delete !== undefined,
+        },
+        auth: this.auth,
+        banner: this.banner,
+      },
     });
   }
 
@@ -549,11 +839,10 @@ export function activate(context: vscode.ExtensionContext): void {
           description: agent.source === "registry" ? agent.version : agent.source,
           agent,
         })),
-        { placeHolder: "Choose an ACP agent" },
+        { placeHolder: "Choose an ACP agent for a new session" },
       );
-      if (picked?.agent.launch) {
-        await catalog.select(picked.agent.id);
-        host.connect(picked.agent.launch);
+      if (picked) {
+        await chat.newSession(picked.agent.id);
       }
     }),
     vscode.commands.registerCommand("brokkAcp.disconnect", () => host.disconnectSession()),
@@ -613,10 +902,9 @@ function resolveAnvilExecutable(context: vscode.ExtensionContext): string {
 }
 
 function isLaunchSpec(value: unknown): value is LaunchSpec {
-  if (!isRecord(value) || typeof value.command !== "string") {
-    return false;
-  }
   return (
+    isRecord(value) &&
+    typeof value.command === "string" &&
     isStringArray(value.args) &&
     isStringRecord(value.env)
   );
@@ -652,329 +940,4 @@ function isEnvAuthMethod(value: unknown): value is EnvAuthMethod {
       (variable.secret === undefined || typeof variable.secret === "boolean") &&
       (variable.optional === undefined || typeof variable.optional === "boolean"),
   );
-}
-
-function chatHtml(webview: vscode.Webview): string {
-  const nonce = randomBytes(18).toString("base64");
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
-  <style nonce="${nonce}">
-    :root { color-scheme: light dark; }
-    body { color: var(--vscode-foreground); font-family: var(--vscode-font-family); padding: 12px; }
-    button, select, textarea, input { font: inherit; }
-    button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 2px; padding: 6px 10px; cursor: pointer; }
-    button:hover { background: var(--vscode-button-hoverBackground); }
-    button:disabled { cursor: default; opacity: .55; }
-    button.secondary { color: var(--vscode-foreground); background: var(--vscode-button-secondaryBackground); }
-    #status { color: var(--vscode-descriptionForeground); margin-bottom: 10px; min-height: 1.4em; }
-    .agent-row, .actions, .permission-actions, .auth-actions { display: flex; align-items: center; gap: 7px; }
-    .agent-row select { flex: 1; min-width: 0; }
-    select, textarea { color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); }
-    select { padding: 5px; }
-    #agent-detail { color: var(--vscode-descriptionForeground); font-size: .92em; margin: 8px 0 12px; }
-    #config { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-    .config-item { display: flex; flex-direction: column; gap: 3px; min-width: 120px; font-size: .9em; }
-    #messages { display: flex; flex-direction: column; gap: 9px; margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .message { border-left: 3px solid var(--vscode-focusBorder); padding: 3px 0 3px 9px; }
-    .message.user { border-left-color: var(--vscode-charts-blue); }
-    .label { color: var(--vscode-descriptionForeground); font-size: .82em; text-transform: uppercase; margin-bottom: 3px; }
-    .thought { color: var(--vscode-descriptionForeground); font-style: italic; border-left: 2px solid var(--vscode-descriptionForeground); padding-left: 8px; }
-    .tool { background: var(--vscode-textBlockQuote-background); border: 1px solid var(--vscode-widget-border); padding: 8px; }
-    .tool summary { cursor: pointer; font-weight: 600; }
-    .permission, .auth { border: 1px solid var(--vscode-focusBorder); background: var(--vscode-editorWidget-background); padding: 10px; margin: 10px 0; }
-    textarea { box-sizing: border-box; width: 100%; min-height: 78px; resize: vertical; padding: 8px; }
-    .actions { margin-top: 8px; }
-    #send { flex: 1; }
-    .hidden { display: none !important; }
-  </style>
-</head>
-<body>
-  <div id="status">Starting Brokk ACP…</div>
-  <div class="agent-row">
-    <select id="agent" aria-label="ACP agent"></select>
-    <button id="refresh" class="secondary" title="Refresh official ACP registry">↻</button>
-  </div>
-  <div id="agent-detail"></div>
-  <div class="agent-row">
-    <button id="install" class="hidden">Install</button>
-    <button id="connect">Connect</button>
-    <button id="disconnect" class="secondary">Disconnect</button>
-  </div>
-  <div id="auth"></div>
-  <div id="config"></div>
-  <div id="messages"></div>
-  <div id="permissions"></div>
-  <textarea id="prompt" placeholder="Ask the selected ACP agent…"></textarea>
-  <div class="actions"><button id="send">Send</button><button id="cancel" class="secondary">Stop</button></div>
-  <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const status = document.getElementById('status');
-    const agentSelect = document.getElementById('agent');
-    const agentDetail = document.getElementById('agent-detail');
-    const installButton = document.getElementById('install');
-    const connectButton = document.getElementById('connect');
-    const messages = document.getElementById('messages');
-    const prompt = document.getElementById('prompt');
-    const permissions = document.getElementById('permissions');
-    const auth = document.getElementById('auth');
-    const config = document.getElementById('config');
-    let agents = [];
-    let assistant;
-    let thought;
-    const tools = new Map();
-
-    function selectedAgent() {
-      return agents.find((entry) => entry.id === agentSelect.value);
-    }
-
-    function updateAgentDetail() {
-      const agent = selectedAgent();
-      if (!agent) return;
-      const bits = [agent.description];
-      if (agent.version) bits.push('v' + agent.version);
-      if (agent.license) bits.push(agent.license);
-      if (agent.requirement) bits.push(agent.requirement);
-      agentDetail.textContent = bits.filter(Boolean).join(' · ');
-      installButton.classList.toggle('hidden', !agent.installable);
-      connectButton.disabled = !agent.ready;
-      vscode.postMessage({ type: 'select_agent', agent_id: agent.id });
-    }
-
-    function appendMessage(kind, label, text) {
-      const node = document.createElement('div');
-      node.className = 'message ' + kind;
-      const heading = document.createElement('div');
-      heading.className = 'label';
-      heading.textContent = label;
-      const content = document.createElement('div');
-      content.textContent = text || '';
-      node.append(heading, content);
-      messages.appendChild(node);
-      node.scrollIntoView({ block: 'nearest' });
-      return content;
-    }
-
-    function flattenOptions(options) {
-      if (!Array.isArray(options)) return [];
-      const flattened = [];
-      for (const entry of options) {
-        if (entry && Array.isArray(entry.options)) flattened.push(...entry.options);
-        else flattened.push(entry);
-      }
-      return flattened;
-    }
-
-    function renderConfig(options) {
-      config.replaceChildren();
-      if (!Array.isArray(options)) return;
-      for (const option of options) {
-        if (!option || !option.id) continue;
-        const wrapper = document.createElement('label');
-        wrapper.className = 'config-item';
-        const title = document.createElement('span');
-        title.textContent = option.name || option.id;
-        wrapper.appendChild(title);
-        if (option.type === 'select') {
-          const select = document.createElement('select');
-          for (const choice of flattenOptions(option.options)) {
-            if (!choice || typeof choice.value !== 'string') continue;
-            const node = document.createElement('option');
-            node.value = choice.value;
-            node.textContent = choice.name || choice.value;
-            node.selected = choice.value === option.currentValue;
-            select.appendChild(node);
-          }
-          select.onchange = () => vscode.postMessage({
-            type: 'set_config',
-            config_id: option.id,
-            value: { value: select.value }
-          });
-          wrapper.appendChild(select);
-        } else if (option.type === 'boolean') {
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.checked = option.currentValue === true;
-          checkbox.onchange = () => vscode.postMessage({
-            type: 'set_config',
-            config_id: option.id,
-            value: { type: 'boolean', value: checkbox.checked }
-          });
-          wrapper.appendChild(checkbox);
-        }
-        config.appendChild(wrapper);
-      }
-    }
-
-    function renderPermission(data) {
-      const card = document.createElement('div');
-      card.className = 'permission';
-      const title = document.createElement('strong');
-      title.textContent = (data.tool_call && data.tool_call.title) || 'Agent requests permission';
-      const detail = document.createElement('div');
-      detail.textContent = data.tool_call && data.tool_call.kind ? data.tool_call.kind : '';
-      const actions = document.createElement('div');
-      actions.className = 'permission-actions';
-      for (const option of data.options || []) {
-        const button = document.createElement('button');
-        button.textContent = option.name || option.optionId;
-        if (String(option.kind || '').startsWith('reject')) button.className = 'secondary';
-        button.onclick = () => {
-          vscode.postMessage({
-            type: 'permission_response',
-            request_id: data.request_id,
-            option_id: option.optionId
-          });
-          card.remove();
-        };
-        actions.appendChild(button);
-      }
-      card.append(title, detail, actions);
-      permissions.appendChild(card);
-    }
-
-    function renderAuth(methods) {
-      auth.replaceChildren();
-      const card = document.createElement('div');
-      card.className = 'auth';
-      const text = document.createElement('div');
-      text.textContent = 'This agent needs authentication.';
-      const actions = document.createElement('div');
-      actions.className = 'auth-actions';
-      for (const method of methods || []) {
-        const button = document.createElement('button');
-        button.textContent = method.name || 'Sign in';
-        button.onclick = () => vscode.postMessage({
-          type: 'authenticate',
-          method_id: method.id
-        });
-        actions.appendChild(button);
-      }
-      const retry = document.createElement('button');
-      retry.className = 'secondary';
-      retry.textContent = 'Retry';
-      retry.onclick = () => vscode.postMessage({ type: 'retry_session' });
-      actions.appendChild(retry);
-      card.append(text, actions);
-      auth.appendChild(card);
-    }
-
-    function renderTool(update) {
-      const id = update.toolCallId || update.tool_call_id || update.id || Math.random().toString();
-      let detail = tools.get(id);
-      if (!detail) {
-        detail = document.createElement('details');
-        detail.className = 'tool';
-        const summary = document.createElement('summary');
-        summary.textContent = update.title || 'Tool call';
-        const body = document.createElement('pre');
-        detail.append(summary, body);
-        messages.appendChild(detail);
-        tools.set(id, detail);
-      }
-      const summary = detail.querySelector('summary');
-      const body = detail.querySelector('pre');
-      if (summary) summary.textContent = (update.title || summary.textContent) + (update.status ? ' · ' + update.status : '');
-      if (body) body.textContent = JSON.stringify(update, null, 2);
-    }
-
-    document.getElementById('refresh').onclick = () => vscode.postMessage({ type: 'refresh' });
-    agentSelect.onchange = updateAgentDetail;
-    installButton.onclick = () => {
-      const agent = selectedAgent();
-      if (agent) vscode.postMessage({ type: 'install', agent_id: agent.id });
-    };
-    connectButton.onclick = () => {
-      const agent = selectedAgent();
-      if (agent) vscode.postMessage({ type: 'connect', agent_id: agent.id });
-    };
-    document.getElementById('disconnect').onclick = () => vscode.postMessage({ type: 'disconnect' });
-    document.getElementById('send').onclick = () => {
-      const text = prompt.value.trim();
-      if (!text) return;
-      appendMessage('user', 'You', text);
-      assistant = appendMessage('assistant', 'Agent', '');
-      thought = undefined;
-      vscode.postMessage({ type: 'prompt', text });
-      prompt.value = '';
-    };
-    prompt.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        document.getElementById('send').click();
-      }
-    });
-    document.getElementById('cancel').onclick = () => vscode.postMessage({ type: 'cancel' });
-
-    window.addEventListener('message', ({ data }) => {
-      if (data.type === 'catalog_loading') status.textContent = 'Refreshing the ACP registry…';
-      if (data.type === 'catalog') {
-        agents = Array.isArray(data.agents) ? data.agents : [];
-        const previous = data.selected_agent || agentSelect.value;
-        agentSelect.replaceChildren();
-        for (const agent of agents) {
-          const option = document.createElement('option');
-          option.value = agent.id;
-          option.textContent = agent.name + (agent.version ? ' ' + agent.version : '') + (agent.ready ? '' : ' — install');
-          agentSelect.appendChild(option);
-        }
-        if (agents.some((agent) => agent.id === previous)) agentSelect.value = previous;
-        updateAgentDetail();
-        status.textContent = data.cached ? 'Registry unavailable · showing cached agents' : 'Choose an ACP agent';
-      }
-      if (data.type === 'installing_agent') status.textContent = 'Installing agent…';
-      if (data.type === 'agent_installed') status.textContent = 'Agent installed';
-      if (data.type === 'connecting') status.textContent = 'Connecting…';
-      if (data.type === 'connected') status.textContent = 'Connected to ' + (data.agent || 'ACP agent');
-      if (data.type === 'auth_required') {
-        status.textContent = data.message || 'Authentication required';
-        renderAuth(data.auth_methods);
-      }
-      if (data.type === 'terminal_auth') status.textContent = 'Finish signing in in the terminal, then choose Retry';
-      if (data.type === 'authenticated') {
-        status.textContent = 'Authenticated · creating session…';
-        auth.replaceChildren();
-      }
-      if (data.type === 'session_started') {
-        status.textContent = 'Ready · session ' + data.session_id;
-        auth.replaceChildren();
-        renderConfig(data.config_options);
-      }
-      if (data.type === 'config_options') renderConfig(data.config_options);
-      if (data.type === 'message_chunk') {
-        if (!assistant) assistant = appendMessage('assistant', 'Agent', '');
-        assistant.textContent += data.text;
-      }
-      if (data.type === 'thought_chunk') {
-        if (!thought) {
-          thought = document.createElement('div');
-          thought.className = 'thought';
-          messages.appendChild(thought);
-        }
-        thought.textContent += data.text;
-      }
-      if (data.type === 'session_update' && data.update) {
-        if (data.update.sessionUpdate === 'tool_call' || data.update.sessionUpdate === 'tool_call_update') renderTool(data.update);
-        if (data.update.sessionUpdate === 'config_option_update') renderConfig(data.update.configOptions);
-      }
-      if (data.type === 'permission_request') renderPermission(data);
-      if (data.type === 'turn_completed') status.textContent = 'Ready · ' + data.stop_reason;
-      if (data.type === 'error') {
-        status.textContent = 'Error';
-        appendMessage('error', 'Error', String(data.message || 'Unknown error'));
-      }
-      if (data.type === 'disconnected') {
-        status.textContent = 'Disconnected';
-        config.replaceChildren();
-        auth.replaceChildren();
-      }
-      if (data.type === 'host_exited') status.textContent = 'Brokk ACP host exited';
-    });
-    vscode.postMessage({ type: 'ready' });
-  </script>
-</body>
-</html>`;
 }
