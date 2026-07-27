@@ -197,7 +197,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     .session-view {
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: auto minmax(0, 1fr) auto;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
       width: 100%;
       min-width: 0;
       height: 100%;
@@ -460,29 +460,100 @@ export function webviewHtml(webview: vscode.Webview): string {
       white-space: pre-wrap;
     }
     .location { margin: 2px 0; color: var(--vscode-textLink-foreground); }
-    .plan {
-      margin: 7px 0 12px;
-      padding: 9px 10px;
+    .plan-dock {
+      min-width: 0;
+      padding: 7px 10px 0;
+      background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+    }
+    .plan-shell {
+      max-width: 720px;
+      margin: 0 auto;
+      overflow: hidden;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 7px;
       background: var(--surface);
     }
-    .plan-title {
-      margin-bottom: 6px;
+    .plan-header {
+      width: 100%;
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 8px;
+      background: transparent;
+      text-align: left;
+    }
+    .plan-header:hover { background: var(--vscode-toolbar-hoverBackground, var(--accent-soft)); }
+    .plan-header:focus-visible {
+      outline: 1px solid var(--vscode-focusBorder);
+      outline-offset: -1px;
+    }
+    .plan-chevron {
+      width: 10px;
+      flex: none;
+      color: var(--vscode-descriptionForeground);
+      font-size: 9px;
+      transform: rotate(90deg);
+      transition: transform 120ms ease;
+    }
+    .plan-shell.collapsed .plan-chevron { transform: none; }
+    .plan-heading {
+      min-width: 0;
+      flex: 1;
+      font-size: 11.5px;
+      font-weight: 650;
+    }
+    .plan-summary {
+      flex: none;
       color: var(--vscode-descriptionForeground);
       font-size: 10.5px;
-      font-weight: 650;
-      letter-spacing: .3px;
-      text-transform: uppercase;
     }
-    .plan-item {
+    .plan-body {
+      max-height: min(220px, 34vh);
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 3px 0;
+      border-top: 1px solid var(--muted-border);
+    }
+    .plan-row {
       display: grid;
-      grid-template-columns: 16px 1fr;
-      gap: 4px;
-      margin: 4px 0;
+      grid-template-columns: 16px minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 6px;
+      padding: 5px 8px;
       font-size: 11.5px;
     }
-    .plan-item.completed { color: var(--vscode-descriptionForeground); }
+    .plan-row + .plan-row { border-top: 1px solid var(--muted-border); }
+    .plan-row.in_progress {
+      background: var(--accent-soft);
+      box-shadow: inset 2px 0 var(--vscode-focusBorder);
+    }
+    .plan-row.completed { color: var(--vscode-descriptionForeground); }
+    .plan-marker {
+      color: var(--vscode-descriptionForeground);
+      text-align: center;
+    }
+    .plan-row.in_progress .plan-marker { color: var(--vscode-focusBorder); }
+    .plan-row.completed .plan-marker {
+      color: var(--vscode-testing-iconPassed, #37a76f);
+    }
+    .plan-copy { min-width: 0; overflow-wrap: anywhere; }
+    .plan-priority {
+      margin-top: 1px;
+      padding: 0 4px;
+      border: 1px solid var(--muted-border);
+      border-radius: 3px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 8.5px;
+      font-weight: 650;
+      letter-spacing: .25px;
+      line-height: 16px;
+      text-transform: uppercase;
+    }
+    .plan-priority.high {
+      color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+      border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)) 45%, transparent);
+    }
     .permission {
       margin: 8px 0 12px;
       padding: 10px;
@@ -780,6 +851,7 @@ export function webviewHtml(webview: vscode.Webview): string {
         <div id="session-toolbar" class="session-toolbar" aria-label="Session configuration">
           <div id="config-bar" class="config-bar"></div>
         </div>
+        <section id="plan-dock" class="plan-dock hidden" aria-label="Agent plan"></section>
         <div id="transcript" class="transcript"><div id="transcript-inner" class="transcript-inner"></div></div>
         <div class="composer-wrap">
           <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Available agent commands"></div>
@@ -811,7 +883,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     const vscode = acquireVsCodeApi();
     const elements = Object.fromEntries([
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
-      'install-row', 'start-button', 'browse-button', 'config-bar', 'transcript',
+      'install-row', 'start-button', 'browse-button', 'config-bar', 'plan-dock', 'transcript',
       'transcript-inner', 'prompt', 'composer-hint', 'send-button', 'stop-button', 'banner',
       'slash-menu', 'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
@@ -822,6 +894,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     let slashSelected = 0;
     let slashDismissedValue;
     const expandedEntries = new Set();
+    const collapsedPlans = new Set();
 
     function selectedAgent() {
       return appState.agents.find(agent => agent.id === elements.agent.value);
@@ -865,6 +938,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       renderAuth();
       if (active) {
         renderConfig(active.configOptions);
+        renderPlanDock(active);
         renderTranscript(active);
         renderComposer(active);
       }
@@ -1038,8 +1112,11 @@ export function webviewHtml(webview: vscode.Webview): string {
       const viewport = elements.transcript;
       const nearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 90;
       const inner = elements['transcript-inner'];
+      const visibleEntries = Array.isArray(active.entries)
+        ? active.entries.filter(entry => entry?.kind !== 'plan')
+        : [];
       inner.replaceChildren();
-      if (!active.entries?.length) {
+      if (!visibleEntries.length) {
         const welcome = document.createElement('div');
         welcome.className = 'welcome';
         const title = document.createElement('div');
@@ -1064,9 +1141,88 @@ export function webviewHtml(webview: vscode.Webview): string {
         }
         inner.appendChild(welcome);
       } else {
-        for (const entry of active.entries) inner.appendChild(renderEntry(entry, active.status));
+        for (const entry of visibleEntries) inner.appendChild(renderEntry(entry, active.status));
       }
       if (nearBottom) viewport.scrollTop = viewport.scrollHeight;
+    }
+
+    function renderPlanDock(active) {
+      const dock = elements['plan-dock'];
+      const entries = Array.isArray(active.currentPlan)
+        ? active.currentPlan.filter(item =>
+            item &&
+            typeof item.content === 'string' &&
+            ['high', 'medium', 'low'].includes(item.priority) &&
+            ['pending', 'in_progress', 'completed'].includes(item.status)
+          )
+        : [];
+      dock.replaceChildren();
+      dock.classList.toggle('hidden', entries.length === 0);
+      if (!entries.length) return;
+
+      const collapsed = collapsedPlans.has(active.localId);
+      const completed = entries.filter(item => item.status === 'completed').length;
+      const inProgress = entries.filter(item => item.status === 'in_progress').length;
+      const shell = document.createElement('div');
+      shell.className = 'plan-shell' + (collapsed ? ' collapsed' : '');
+      const header = document.createElement('button');
+      header.type = 'button';
+      header.className = 'plan-header';
+      header.setAttribute('aria-expanded', String(!collapsed));
+      header.setAttribute('aria-controls', 'active-plan-entries');
+      header.onclick = () => {
+        if (collapsedPlans.has(active.localId)) {
+          collapsedPlans.delete(active.localId);
+        } else {
+          collapsedPlans.add(active.localId);
+        }
+        renderPlanDock(active);
+      };
+      const chevron = document.createElement('span');
+      chevron.className = 'plan-chevron';
+      chevron.textContent = '›';
+      chevron.setAttribute('aria-hidden', 'true');
+      const heading = document.createElement('span');
+      heading.className = 'plan-heading';
+      heading.textContent = 'Plan';
+      const summary = document.createElement('span');
+      summary.className = 'plan-summary';
+      summary.setAttribute('aria-live', 'polite');
+      summary.textContent = completed + '/' + entries.length + ' complete' +
+        (inProgress ? ' · ' + inProgress + ' active' : '');
+      header.append(chevron, heading, summary);
+      shell.appendChild(header);
+
+      if (!collapsed) {
+        const body = document.createElement('div');
+        body.id = 'active-plan-entries';
+        body.className = 'plan-body';
+        for (const item of entries) {
+          const row = document.createElement('div');
+          row.className = 'plan-row ' + item.status;
+          row.setAttribute(
+            'aria-label',
+            item.status.replace('_', ' ') + ', ' + item.priority + ' priority: ' + item.content
+          );
+          const marker = document.createElement('span');
+          marker.className = 'plan-marker';
+          marker.textContent = item.status === 'completed'
+            ? '✓'
+            : item.status === 'in_progress' ? '●' : '○';
+          marker.setAttribute('aria-hidden', 'true');
+          const copy = document.createElement('span');
+          copy.className = 'plan-copy';
+          copy.textContent = item.content;
+          const priority = document.createElement('span');
+          priority.className = 'plan-priority ' + item.priority;
+          priority.textContent = item.priority;
+          priority.title = item.priority + ' priority';
+          row.append(marker, copy, priority);
+          body.appendChild(row);
+        }
+        shell.appendChild(body);
+      }
+      dock.appendChild(shell);
     }
 
     function renderEntry(entry, sessionStatus) {
@@ -1103,10 +1259,6 @@ export function webviewHtml(webview: vscode.Webview): string {
       }
       if (entry.kind === 'tool') {
         wrapper.appendChild(renderTool(entry));
-        return wrapper;
-      }
-      if (entry.kind === 'plan') {
-        wrapper.appendChild(renderPlan(entry));
         return wrapper;
       }
       if (entry.kind === 'permission') {
@@ -1168,26 +1320,6 @@ export function webviewHtml(webview: vscode.Webview): string {
       if (!hasContent) body.textContent = entry.status === 'in_progress' ? 'Running…' : 'No additional output.';
       detail.append(summary, body);
       return detail;
-    }
-
-    function renderPlan(entry) {
-      const plan = document.createElement('div');
-      plan.className = 'plan';
-      const heading = document.createElement('div');
-      heading.className = 'plan-title';
-      heading.textContent = 'Plan';
-      plan.appendChild(heading);
-      for (const item of Array.isArray(entry.plan) ? entry.plan : []) {
-        const row = document.createElement('div');
-        row.className = 'plan-item ' + (item?.status || '');
-        const marker = document.createElement('span');
-        marker.textContent = item?.status === 'completed' ? '✓' : item?.status === 'in_progress' ? '●' : '○';
-        const copy = document.createElement('span');
-        copy.textContent = item?.content || item?.title || 'Plan item';
-        row.append(marker, copy);
-        plan.appendChild(row);
-      }
-      return plan;
     }
 
     function renderPermission(entry) {

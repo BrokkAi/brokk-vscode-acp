@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
+import {
+  latestLegacyPlan,
+  normalizePlanEntries,
+  type SessionPlanEntry,
+} from "./plans";
 
 export type SessionStatus =
   | "connecting"
@@ -45,6 +50,7 @@ export interface SessionRecord {
   capabilities?: unknown;
   availableCommands?: unknown[];
   currentModeId?: string;
+  currentPlan?: SessionPlanEntry[];
 }
 
 export interface SessionSummary {
@@ -79,6 +85,7 @@ export class SessionStore {
   private activeTurnId: string | undefined;
   private replaying = false;
   private replayBackup: TranscriptEntry[] | undefined;
+  private replayPlanBackup: SessionPlanEntry[] | undefined;
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly context: vscode.ExtensionContext) {
@@ -86,8 +93,12 @@ export class SessionStore {
     if (saved?.version === 1 && Array.isArray(saved.sessions)) {
       for (const session of saved.sessions) {
         if (isSessionRecord(session)) {
+          const currentPlan = Array.isArray(session.currentPlan)
+            ? normalizePlanEntries(session.currentPlan)
+            : latestLegacyPlan(session.entries);
           this.sessions.set(session.localId, {
             ...session,
+            currentPlan,
             status: "disconnected",
           });
         }
@@ -137,6 +148,7 @@ export class SessionStore {
     this.activeTurnId = undefined;
     this.replaying = false;
     this.replayBackup = undefined;
+    this.replayPlanBackup = undefined;
     session.status = "connecting";
     this.touch(session);
     return session;
@@ -148,7 +160,11 @@ export class SessionStore {
       return;
     }
     this.replayBackup = structuredClone(session.entries);
+    this.replayPlanBackup = session.currentPlan
+      ? structuredClone(session.currentPlan)
+      : undefined;
     session.entries = [];
+    session.currentPlan = undefined;
     this.activeTurnId = undefined;
     this.replaying = true;
     this.touch(session);
@@ -188,6 +204,7 @@ export class SessionStore {
     active.status = "ready";
     this.replaying = false;
     this.replayBackup = undefined;
+    this.replayPlanBackup = undefined;
     for (const entry of active.entries) {
       if (entry.status === "streaming") {
         entry.status = "completed";
@@ -248,6 +265,7 @@ export class SessionStore {
     const turnId = randomUUID();
     this.activeTurnId = turnId;
     session.status = "running";
+    session.currentPlan = undefined;
     session.entries.push({
       id: randomUUID(),
       kind: "user",
@@ -307,7 +325,7 @@ export class SessionStore {
         this.upsertTool(value, true);
         break;
       case "plan":
-        this.upsertPlan(value.entries);
+        session.currentPlan = normalizePlanEntries(value.entries);
         break;
       case "config_option_update":
         session.configOptions = Array.isArray(value.configOptions) ? value.configOptions : [];
@@ -395,8 +413,11 @@ export class SessionStore {
   disconnected(): void {
     const session = this.active;
     if (session) {
-      if (this.replaying && this.replayBackup) {
-        session.entries = this.replayBackup;
+      if (this.replaying) {
+        if (this.replayBackup) {
+          session.entries = this.replayBackup;
+        }
+        session.currentPlan = this.replayPlanBackup;
       }
       if (session.status !== "error") {
         session.status = "disconnected";
@@ -406,6 +427,7 @@ export class SessionStore {
     this.activeTurnId = undefined;
     this.replaying = false;
     this.replayBackup = undefined;
+    this.replayPlanBackup = undefined;
   }
 
   removeByRemoteId(agentId: string, remoteId: string): void {
@@ -453,6 +475,7 @@ export class SessionStore {
     if (this.replaying && kind === "user") {
       turnId = randomUUID();
       this.activeTurnId = turnId;
+      session.currentPlan = undefined;
     }
     if (!turnId) {
       turnId = randomUUID();
@@ -506,27 +529,6 @@ export class SessionStore {
     assign("locations", Array.isArray(value.locations) ? value.locations : undefined);
     assign("rawInput", value.rawInput);
     assign("rawOutput", value.rawOutput);
-  }
-
-  private upsertPlan(entries: unknown): void {
-    const session = this.active;
-    if (!session) {
-      return;
-    }
-    const existing = [...session.entries]
-      .reverse()
-      .find((entry) => entry.kind === "plan" && entry.turnId === this.activeTurnId);
-    if (existing) {
-      existing.plan = Array.isArray(entries) ? entries : [];
-      return;
-    }
-    session.entries.push({
-      id: randomUUID(),
-      kind: "plan",
-      turnId: this.activeTurnId,
-      plan: Array.isArray(entries) ? entries : [],
-      createdAt: new Date().toISOString(),
-    });
   }
 
   private touch(session: SessionRecord): void {
