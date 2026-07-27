@@ -12,6 +12,16 @@ Code. It provides a session-first coding interface for:
 The goal is to make agentic coding in VS Code portable across ACP-compatible
 agents instead of coupling the editor to one provider.
 
+## Brokk ACP in action
+
+| Start any ACP agent | Work in a persistent coding session |
+| --- | --- |
+| ![Start an ACP session with bundled Anvil, a custom server, or a registry agent](docs/screenshots/new-session.png) | ![An active Anvil session with structured output and the persistent composer](docs/screenshots/active-session.png) |
+
+Choose bundled Anvil, a custom stdio server, or an agent from the official ACP
+registry. Sessions keep configuration, structured agent activity, rendered
+Markdown, and the prompt composer together in the VS Code sidebar.
+
 ## Current capabilities
 
 ### Agents

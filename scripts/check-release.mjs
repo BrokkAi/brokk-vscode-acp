@@ -84,6 +84,21 @@ for (const packagedPath of ["legal/**", "licenses/**", "source/**"]) {
   );
 }
 
+for (const screenshot of [
+  "docs/screenshots/new-session.png",
+  "docs/screenshots/active-session.png",
+]) {
+  assert.ok(fs.existsSync(path.join(root, screenshot)), `README screenshot is missing: ${screenshot}`);
+  assert.ok(
+    fs.readFileSync(path.join(root, "README.md"), "utf8").includes(`](${screenshot})`),
+    `README does not reference screenshot: ${screenshot}`,
+  );
+}
+assert.ok(
+  packageJson.files?.includes("docs/screenshots/**"),
+  "package files omit README screenshots",
+);
+
 const tag = option("--tag") || (process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : "");
 if (tag) {
   assert.equal(tag, `v${extensionVersion}`, `release tag must be v${extensionVersion}`);
