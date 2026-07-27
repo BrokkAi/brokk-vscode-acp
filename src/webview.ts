@@ -1625,13 +1625,42 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
 
     function appendInline(target, text) {
-      const pattern = /\`([^\`]+)\`/g;
+      const pattern = new RegExp([
+        /(\`+)([^\\n]*?)\\1/.source,
+        /(?<!\\*)\\*\\*\\*(?!\\*)(?=\\S)(.+?)(?<=\\S)(?<!\\*)\\*\\*\\*(?!\\*)/.source,
+        /(?<![\\w_])___(?!_)(?=\\S)(.+?)(?<=\\S)(?<!_)___(?![\\w_])/.source,
+        /(?<!\\*)\\*\\*(?!\\*)(?=\\S)(.+?)(?<=\\S)(?<!\\*)\\*\\*(?!\\*)/.source,
+        /(?<![\\w_])__(?!_)(?=\\S)(.+?)(?<=\\S)(?<!_)__(?![\\w_])/.source,
+        /(?<!\\*)\\*(?!\\*)(?=\\S)(.+?)(?<=\\S)(?<!\\*)\\*(?!\\*)/.source,
+        /(?<![\\w_])_(?!_)(?=\\S)(.+?)(?<=\\S)(?<!_)_(?![\\w_])/.source
+      ].join('|'), 'g');
       let offset = 0;
       for (const match of text.matchAll(pattern)) {
         target.appendChild(document.createTextNode(text.slice(offset, match.index)));
-        const code = document.createElement('code');
-        code.textContent = match[1];
-        target.appendChild(code);
+        if (match[1]) {
+          const code = document.createElement('code');
+          code.textContent = match[2];
+          target.appendChild(code);
+        } else {
+          const combined = match[3] || match[4];
+          const strongContent = match[5] || match[6];
+          const emphasisContent = match[7] || match[8];
+          if (combined) {
+            const strong = document.createElement('strong');
+            const emphasis = document.createElement('em');
+            appendInline(emphasis, combined);
+            strong.appendChild(emphasis);
+            target.appendChild(strong);
+          } else if (strongContent) {
+            const strong = document.createElement('strong');
+            appendInline(strong, strongContent);
+            target.appendChild(strong);
+          } else if (emphasisContent) {
+            const emphasis = document.createElement('em');
+            appendInline(emphasis, emphasisContent);
+            target.appendChild(emphasis);
+          }
+        }
         offset = match.index + match[0].length;
       }
       target.appendChild(document.createTextNode(text.slice(offset)));

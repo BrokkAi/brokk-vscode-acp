@@ -12,7 +12,7 @@
   },
   "icon": "icon.png",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "license": "GPL-3.0-only",
   "engines": {
     "vscode": "^1.95.0"
@@ -131,6 +131,7 @@
     "compile:rust:release": "cargo build --release --package brokk-acp-host",
     "compile:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
     "check": "tsc --noEmit && cargo check --workspace",
+    "test:markdown": "node scripts/test-markdown.mjs",
     "test:plans": "node scripts/test-plans.mjs",
     "test:webview-layout": "node scripts/test-webview-layout.mjs",
     "test:lifecycle": "cargo build --package brokk-acp-host && node scripts/test-connection-lifecycle.mjs",
