@@ -49,19 +49,37 @@ assert.match(
 assert.match(sessionStyles, /inset:\s*0/, "the session must fill the containing block");
 assert.match(
   sessionStyles,
-  /grid-template-rows:\s*auto auto minmax\(0,\s*1fr\) auto/,
-  "only the transcript row may consume remaining height",
+  /display:\s*flex/,
+  "the loaded session must use a column layout that preserves intrinsic controls",
 );
-assert.match(sessionStyles, /min-height:\s*0/, "the session grid must be allowed to shrink");
+assert.match(
+  sessionStyles,
+  /flex-direction:\s*column/,
+  "the session toolbar, transcript, and composer must remain vertically ordered",
+);
+assert.match(sessionStyles, /min-height:\s*0/, "the session layout must be allowed to shrink");
 assert.match(sessionStyles, /overflow:\s*hidden/, "the session must clip overflowing children");
 
 const transcriptStyles = cssRule(html, ".transcript");
+assert.match(
+  transcriptStyles,
+  /flex:\s*1 1 0/,
+  "only the transcript may consume or release remaining session height",
+);
 assert.match(
   transcriptStyles,
   /overflow-y:\s*auto/,
   "long content must scroll inside the transcript row",
 );
 assert.match(transcriptStyles, /min-height:\s*0/, "the transcript row must be shrinkable");
+
+for (const selector of [".session-toolbar", ".plan-dock", ".composer-wrap"]) {
+  assert.match(
+    cssRule(html, selector),
+    /flex:\s*none/,
+    `${selector} must retain its intrinsic height when a loaded transcript is long`,
+  );
+}
 
 const sessionMarkup = html.slice(
   html.indexOf('<section id="session-view"'),
