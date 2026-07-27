@@ -39,9 +39,29 @@ assert.ok(
 );
 
 const anvilVersion = match(packageScript, /const anvilVersion = "([^"]+)"/, "Anvil package version");
+for (const requiredNotice of [
+  "legal/host/THIRD_PARTY_LICENSES.html",
+  "licenses/host/THIRD_PARTY_LICENSES.html",
+  "licenses/anvil/",
+  `/anvil/tree/v${anvilVersion}`,
+  `/anvil/blob/v${anvilVersion}/LICENSE`,
+  `/anvil/blob/v${anvilVersion}/licenses/SOURCE.md`,
+  `/anvil/blob/v${anvilVersion}/licenses/THIRD_PARTY_LICENSES.html`,
+  `/anvil/blob/v${anvilVersion}/licenses/SUPPLEMENTAL_THIRD_PARTY_NOTICES.txt`,
+  `/anvil/blob/v${anvilVersion}/licenses/GPL-3.0.md`,
+]) {
+  assert.ok(
+    notices.includes(requiredNotice),
+    `third-party notice is missing or stale: ${requiredNotice}`,
+  );
+}
 assert.ok(
-  notices.includes(`/anvil/tree/v${anvilVersion}`),
-  "Anvil source notice does not match the package pin",
+  notices.includes(`Anvil ${anvilVersion}`),
+  "third-party notice does not identify the bundled Anvil version",
+);
+assert.ok(
+  fs.readFileSync(path.join(root, "SOURCE.md"), "utf8").includes(`/anvil/tree/v${anvilVersion}`),
+  "corresponding-source notice does not match the Anvil package pin",
 );
 
 for (const required of [
@@ -55,6 +75,13 @@ for (const required of [
   "legal/host/THIRD_PARTY_LICENSES.html",
 ]) {
   assert.ok(fs.existsSync(path.join(root, required)), `required release file is missing: ${required}`);
+}
+
+for (const packagedPath of ["legal/**", "licenses/**", "source/**"]) {
+  assert.ok(
+    packageJson.files?.includes(packagedPath),
+    `package files omit required compliance path: ${packagedPath}`,
+  );
 }
 
 const tag = option("--tag") || (process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : "");

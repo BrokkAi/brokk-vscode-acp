@@ -217,6 +217,7 @@ async function verifyPackage(archive, target, hostName, anvilName) {
       "extension/SOURCE.md",
       "extension/SUPPORT.md",
       "extension/THIRD_PARTY_NOTICES.md",
+      "extension/legal/host/THIRD_PARTY_LICENSES.html",
       `extension/bin/${target}/${hostName}`,
       `extension/bin/${target}/${anvilName}`,
       "extension/licenses/anvil/LICENSE",
