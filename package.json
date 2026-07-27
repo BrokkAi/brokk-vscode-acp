@@ -35,6 +35,7 @@
   "files": [
     "bin/**",
     "dist/**",
+    "docs/screenshots/**",
     "icon.png",
     "legal/**",
     "licenses/**",
