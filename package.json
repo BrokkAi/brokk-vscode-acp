@@ -1,7 +1,9 @@
 {
   "name": "brokk-vscode-acp",
   "displayName": "Brokk ACP",
-  "publisher": "Brokk",
+  "publisher": "brokk",
+  "homepage": "https://brokk.ai",
+  "icon": "icon.png",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
   "version": "0.2.0",
   "license": "Apache-2.0",
@@ -20,8 +22,8 @@
   "files": [
     "bin/**",
     "dist/**",
+    "icon.png",
     "licenses/**",
-    "resources/**",
     "LICENSE",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
@@ -40,7 +42,7 @@
     ],
     "viewsContainers": {
       "activitybar": [
-        { "id": "brokkAcp", "title": "Brokk ACP", "icon": "resources/brokk-acp.svg" }
+        { "id": "brokkAcp", "title": "Brokk ACP", "icon": "icon.png" }
       ]
     },
     "views": {
