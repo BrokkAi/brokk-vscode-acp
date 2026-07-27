@@ -36,8 +36,10 @@ agents instead of coupling the editor to one provider.
   transcript replay and falls back to `session/resume` when load is unavailable.
 - Connection startup, authentication, session loading, cancellation, errors,
   and agent switching have visible progress in the chat interface.
-- Messages, thoughts, plans, tool calls, permissions, usage, and errors remain
-  grouped into coherent turns rather than a raw output stream.
+- Messages, thoughts, tool calls, permissions, usage, and errors remain grouped
+  into coherent turns rather than a raw output stream.
+- Standard ACP plans stay visible in a collapsible progress dock with live
+  status, priority, and completion updates.
 - Agent-advertised session configuration options are editable from the compact
   session toolbar.
 - Typing `/` opens autocomplete for the session's live ACP
