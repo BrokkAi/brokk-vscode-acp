@@ -21,6 +21,8 @@ official ACP Registry, and accepts arbitrary custom stdio ACP servers.
   `session/new`, `session/load`, `session/resume`, and `session/delete`.
 - Structured streaming transcripts for messages, thoughts, plans, tool calls,
   permissions, usage, cancellation, and dynamic session configuration.
+- Slash-command autocomplete from each agent's live
+  `available_commands_update` advertisements.
 - Permission requests, workspace-scoped text file access, and client-owned
   terminal execution.
 - Session metadata and transcripts persist across VS Code reloads; reopening an
