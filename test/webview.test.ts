@@ -143,6 +143,48 @@ describe("webview client", () => {
     });
   });
 
+  it("shows a clear folder-opening state without hiding the agent catalog", async () => {
+    const harness = await createHarness();
+    await harness.sendState(baseState({ workspace: undefined }));
+
+    expect(harness.document.querySelector("#top-meta")?.textContent).toBe(
+      "Open a folder to start",
+    );
+    expect(harness.document.querySelector("#start-title")?.textContent).toBe(
+      "Open a folder to start",
+    );
+    expect(harness.document.querySelector("#start-lede")?.textContent).toContain(
+      "work inside a project folder",
+    );
+    expect(
+      [...harness.document.querySelectorAll<HTMLSelectElement>("#agent option")].map(
+        (option) => option.textContent,
+      ),
+    ).toEqual(["Anvil", "Codex 1.2.3 — install"]);
+
+    const workingDirectory =
+      harness.document.querySelector<HTMLSelectElement>("#working-directory")!;
+    expect(workingDirectory.disabled).toBe(true);
+    expect([...workingDirectory.options].map((option) => option.textContent)).toEqual([
+      "No folder open",
+    ]);
+    expect(harness.document.querySelector("#workspace-description")?.textContent).toContain(
+      "Open a project folder",
+    );
+    expect(
+      harness.document.querySelector("#refresh-worktrees")?.classList.contains("hidden"),
+    ).toBe(true);
+    expect(
+      harness.document.querySelector("#browse-button")?.classList.contains("hidden"),
+    ).toBe(true);
+
+    const openFolder = harness.document.querySelector<HTMLButtonElement>("#start-button")!;
+    expect(openFolder.textContent).toBe("Open folder");
+    expect(openFolder.disabled).toBe(false);
+    openFolder.click();
+    expect(harness.posted.at(-1)).toEqual({ type: "open_workspace" });
+  });
+
   it("selects, describes, and opens Git worktrees", async () => {
     const harness = await createHarness();
     await harness.sendState(

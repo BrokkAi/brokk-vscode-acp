@@ -311,7 +311,10 @@ export class RustHost implements vscode.Disposable {
       .get<string>("host.path", "")
       .trim();
     const executable = override || this.defaultExecutable();
-    const child = spawn(executable, [], { cwd: workspacePath(), stdio: "pipe" });
+    const child = spawn(executable, [], {
+      cwd: workspacePathOrUndefined() ?? this.context.extensionPath,
+      stdio: "pipe",
+    });
     this.child = child;
     child.on("error", (error) => {
       this.events.fire({ type: "error", message: `Rust host failed: ${error.message}` });
@@ -784,6 +787,19 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           await this.refreshWorktrees();
           this.postState();
           break;
+        case "open_workspace": {
+          const selected = await vscode.window.showOpenDialog({
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false,
+            openLabel: "Open folder",
+            title: "Open a folder for Brokk ACP",
+          });
+          if (selected?.[0]) {
+            await vscode.commands.executeCommand("vscode.openFolder", selected[0]);
+          }
+          break;
+        }
         case "new_session":
           if (typeof message.agent_id === "string") {
             await this.newSession(
@@ -1186,8 +1202,14 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   }
 
   private async refreshWorktrees(): Promise<void> {
+    const workspace = workspacePathOrUndefined();
+    if (!workspace) {
+      this.worktreeChoices = [];
+      this.worktreeError = undefined;
+      return;
+    }
     try {
-      this.worktreeChoices = await this.worktrees.list(workspacePath());
+      this.worktreeChoices = await this.worktrees.list(workspace);
       this.worktreeError = undefined;
     } catch (error) {
       this.worktreeChoices = [];
@@ -1223,6 +1245,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
 
   private postState(): void {
     const sessionState = this.sessions.snapshot();
+    const workspace = workspacePathOrUndefined();
     const relinkSession = this.relinkLocalId
       ? this.sessions.get(this.relinkLocalId)
       : undefined;
@@ -1246,10 +1269,12 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         },
         auth: this.auth,
         banner: this.banner,
-        workspace: {
-          path: workspacePath(),
-          name: path.basename(workspacePath()),
-        },
+        workspace: workspace
+          ? {
+              path: workspace,
+              name: path.basename(workspace),
+            }
+          : undefined,
         worktrees: this.worktreeChoices,
         worktreeError: this.worktreeError,
         relinkSession: relinkSession
@@ -1334,11 +1359,15 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function workspacePath(): string {
-  const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const workspace = workspacePathOrUndefined();
   if (!workspace) {
     throw new Error("Open a workspace before using an ACP agent.");
   }
   return workspace;
+}
+
+export function workspacePathOrUndefined(): string | undefined {
+  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 }
 
 export function registryUrl(): string {
