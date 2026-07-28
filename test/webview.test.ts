@@ -86,6 +86,17 @@ function activeSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function dragEvent(
+  harness: Harness,
+  type: string,
+  files: unknown[],
+): { event: Event; transfer: { files: unknown[]; types: string[]; dropEffect: string } } {
+  const event = new harness.window.Event(type, { bubbles: true, cancelable: true });
+  const transfer = { files, types: ["Files"], dropEffect: "none" };
+  Object.defineProperty(event, "dataTransfer", { value: transfer });
+  return { event, transfer };
+}
+
 describe("webview client", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -353,6 +364,29 @@ describe("webview client", () => {
     harness.document.querySelector<HTMLButtonElement>(".image-preview-remove")!.click();
     expect(harness.document.querySelector(".image-preview")).toBeNull();
 
+    const composer = harness.document.querySelector<HTMLElement>("#composer")!;
+    const firstEnter = dragEvent(harness, "dragenter", [png]);
+    composer.dispatchEvent(firstEnter.event);
+    expect(composer.classList.contains("drag-active")).toBe(true);
+    expect(harness.document.querySelector("#drop-overlay")?.classList.contains("hidden")).toBe(
+      false,
+    );
+    composer.dispatchEvent(dragEvent(harness, "dragleave", [png]).event);
+    expect(composer.classList.contains("drag-active")).toBe(false);
+
+    composer.dispatchEvent(dragEvent(harness, "dragenter", [png]).event);
+    const dragOver = dragEvent(harness, "dragover", [png]);
+    composer.dispatchEvent(dragOver.event);
+    expect(dragOver.transfer.dropEffect).toBe("copy");
+    composer.dispatchEvent(dragEvent(harness, "drop", [png]).event);
+    await harness.window.happyDOM.waitUntilComplete();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(composer.classList.contains("drag-active")).toBe(false);
+    expect(harness.document.querySelector(".image-preview-name")?.textContent).toBe(
+      "screen.png",
+    );
+    harness.document.querySelector<HTMLButtonElement>(".image-preview-remove")!.click();
+
     const paste = new harness.window.Event("paste", { bubbles: true, cancelable: true });
     Object.defineProperty(paste, "clipboardData", { value: { files: [png] } });
     prompt.dispatchEvent(paste);
@@ -387,6 +421,23 @@ describe("webview client", () => {
     const attach = harness.document.querySelector<HTMLButtonElement>("#attach-button")!;
     expect(attach.disabled).toBe(true);
     expect(attach.title).toContain("does not advertise");
+
+    const png = new harness.window.File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "screen.png",
+      { type: "image/png" },
+    );
+    const composer = harness.document.querySelector<HTMLElement>("#composer")!;
+    composer.dispatchEvent(dragEvent(harness, "dragenter", [png]).event);
+    expect(composer.classList.contains("drag-active")).toBe(false);
+    const dragOver = dragEvent(harness, "dragover", [png]);
+    composer.dispatchEvent(dragOver.event);
+    expect(dragOver.transfer.dropEffect).toBe("none");
+    composer.dispatchEvent(dragEvent(harness, "drop", [png]).event);
+    await harness.window.happyDOM.waitUntilComplete();
+    expect(harness.document.querySelector("#composer-hint")?.textContent).toContain(
+      "does not support image prompts",
+    );
   });
 
   it("renders authentication, banners, session drawers, and connection progress", async () => {

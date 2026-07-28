@@ -714,6 +714,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       color: color-mix(in srgb, currentColor 72%, transparent);
     }
     .composer {
+      position: relative;
       width: 100%;
       max-width: 720px;
       margin: 0 auto;
@@ -723,6 +724,41 @@ export function webviewHtml(webview: vscode.Webview): string {
       background: var(--vscode-input-background);
     }
     .composer:focus-within { border-color: var(--vscode-focusBorder); }
+    .composer.drag-active {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+    }
+    .drop-overlay {
+      position: absolute;
+      z-index: 5;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      background: color-mix(
+        in srgb,
+        var(--vscode-editor-background) 88%,
+        var(--vscode-focusBorder)
+      );
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .1px;
+    }
+    .drop-overlay-content {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .drop-overlay-icon {
+      font-size: 17px;
+      line-height: 1;
+    }
     .image-previews {
       display: flex;
       gap: 7px;
@@ -1005,7 +1041,13 @@ export function webviewHtml(webview: vscode.Webview): string {
         <div id="transcript" class="transcript"><div id="transcript-inner" class="transcript-inner"></div></div>
         <div class="composer-wrap">
           <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Available agent commands"></div>
-          <div class="composer">
+          <div id="composer" class="composer">
+            <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
+              <div class="drop-overlay-content">
+                <span class="drop-overlay-icon" aria-hidden="true">▧</span>
+                <span>Drop images to attach</span>
+              </div>
+            </div>
             <div id="image-previews" class="image-previews hidden" aria-label="Attached images"></div>
             <textarea id="prompt" rows="2" placeholder="Ask the agent…" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
             <div class="composer-footer">
@@ -1040,9 +1082,9 @@ export function webviewHtml(webview: vscode.Webview): string {
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
       'install-row', 'start-button', 'browse-button', 'session-toolbar', 'config-summary',
       'config-button', 'config-panel', 'config-editor', 'plan-dock', 'transcript',
-      'transcript-inner', 'prompt', 'composer-hint', 'send-button', 'stop-button', 'banner',
-      'slash-menu', 'image-previews', 'image-input', 'attach-button', 'auth-card', 'drawer',
-      'drawer-backdrop', 'session-list', 'drawer-footer'
+      'transcript-inner', 'composer', 'drop-overlay', 'prompt', 'composer-hint', 'send-button',
+      'stop-button', 'banner', 'slash-menu', 'image-previews', 'image-input', 'attach-button',
+      'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
     const imageLimits = ${JSON.stringify({
       count: MAX_PROMPT_IMAGES,
@@ -1061,6 +1103,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     let pendingImages = [];
     let attachmentError;
     let attachmentSessionId;
+    let imageDragDepth = 0;
     const expandedEntries = new Set();
     const collapsedPlans = new Set();
 
@@ -1688,6 +1731,28 @@ export function webviewHtml(webview: vscode.Webview): string {
       renderComposer(appState.active);
     }
 
+    function dragHasFiles(event) {
+      const transfer = event.dataTransfer;
+      if (!transfer) return false;
+      return Array.from(transfer.types || []).includes('Files') ||
+        Boolean(transfer.files?.length);
+    }
+
+    function setImageDragActive(active) {
+      const enabled = Boolean(
+        active &&
+        appState.active?.status === 'ready' &&
+        imagePromptsSupported()
+      );
+      elements.composer.classList.toggle('drag-active', enabled);
+      elements['drop-overlay'].classList.toggle('hidden', !enabled);
+    }
+
+    function resetImageDrag() {
+      imageDragDepth = 0;
+      setImageDragActive(false);
+    }
+
     function renderComposer(active) {
       if (attachmentSessionId !== active.localId) {
         attachmentSessionId = active.localId;
@@ -1699,6 +1764,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       }
       const running = active.status === 'running';
       const ready = active.status === 'ready';
+      if (!ready || !imagePromptsSupported()) resetImageDrag();
       elements.prompt.disabled = false;
       elements['send-button'].classList.toggle('hidden', running);
       elements['stop-button'].classList.toggle('hidden', !running);
@@ -2109,6 +2175,36 @@ export function webviewHtml(webview: vscode.Webview): string {
     };
     elements['send-button'].onclick = submitPrompt;
     elements['stop-button'].onclick = () => post('cancel');
+    elements.composer.ondragenter = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      imageDragDepth += 1;
+      setImageDragActive(true);
+    };
+    elements.composer.ondragover = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect =
+          appState.active?.status === 'ready' && imagePromptsSupported()
+            ? 'copy'
+            : 'none';
+      }
+      setImageDragActive(true);
+    };
+    elements.composer.ondragleave = event => {
+      if (!dragHasFiles(event)) return;
+      imageDragDepth = Math.max(0, imageDragDepth - 1);
+      if (imageDragDepth === 0) setImageDragActive(false);
+    };
+    elements.composer.ondrop = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer?.files || []);
+      resetImageDrag();
+      void addImageFiles(files);
+    };
+    elements.composer.ondragend = resetImageDrag;
     elements['attach-button'].onclick = () => elements['image-input'].click();
     elements['image-input'].onchange = () => {
       void addImageFiles(elements['image-input'].files);
@@ -2177,6 +2273,15 @@ export function webviewHtml(webview: vscode.Webview): string {
       event.preventDefault();
       setConfigOpen(false);
       elements['config-button'].focus();
+    });
+
+    window.addEventListener('dragover', event => {
+      if (dragHasFiles(event)) event.preventDefault();
+    });
+    window.addEventListener('drop', event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      if (!elements.composer.contains(event.target)) resetImageDrag();
     });
 
     window.addEventListener('message', ({ data }) => {
