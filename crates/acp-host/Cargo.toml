@@ -1,6 +1,6 @@
 [package]
 name = "brokk-acp-host"
-version = "0.3.8"
+version = "0.4.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "Rust ACP runtime for the Brokk VS Code extension"
