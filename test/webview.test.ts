@@ -122,8 +122,11 @@ describe("webview client", () => {
     expect(harness.posted.at(-1)).toEqual({
       type: "new_session",
       agent_id: "bundled:anvil",
-      working_directory: { kind: "workspace" },
+      working_directory: { kind: "create" },
     });
+    expect(harness.document.querySelector("#start-button")?.textContent).toBe(
+      "Create worktree and start",
+    );
 
     agent.value = "registry:codex";
     agent.dispatchEvent(new harness.window.Event("change"));
@@ -164,15 +167,19 @@ describe("webview client", () => {
     );
     const picker = harness.document.querySelector<HTMLSelectElement>("#working-directory")!;
     expect([...picker.options].map((option) => option.textContent)).toEqual([
-      "Current workspace — workspace",
-      "Create a new worktree",
+      "Use current workspace — workspace · shared checkout",
+      "Create an isolated worktree — recommended",
       "Use keen-fox — feature · Brokk",
     ]);
+    expect(picker.value).toBe("create");
 
     picker.value = "create";
     picker.dispatchEvent(new harness.window.Event("change"));
     expect(harness.document.querySelector("#workspace-description")?.textContent).toContain(
       ".brokk/worktrees",
+    );
+    expect(harness.document.querySelector("#workspace-description")?.textContent).toContain(
+      "opens the same folder",
     );
     expect(harness.document.querySelector<HTMLButtonElement>("#browse-button")!.disabled).toBe(
       true,
@@ -186,6 +193,9 @@ describe("webview client", () => {
 
     picker.value = "existing:1";
     picker.dispatchEvent(new harness.window.Event("change"));
+    expect(harness.document.querySelector("#start-button")?.textContent).toBe(
+      "Open worktree and start",
+    );
     harness.document.querySelector<HTMLButtonElement>("#browse-button")!.click();
     expect(harness.posted.at(-1)).toEqual({
       type: "browse_sessions",
@@ -216,6 +226,18 @@ describe("webview client", () => {
       type: "open_worktree",
       local_id: "local-1",
     });
+
+    await harness.sendState(
+      baseState({
+        worktreeError: "Git worktrees require a Git repository.",
+      }),
+    );
+    expect(harness.document.querySelector<HTMLSelectElement>("#working-directory")!.value).toBe(
+      "workspace",
+    );
+    expect(harness.document.querySelector("#start-button")?.textContent).toBe(
+      "Start in shared workspace",
+    );
 
     await harness.sendState(
       baseState({

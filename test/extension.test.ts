@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     showWarningMessage: vi.fn(async () => undefined),
     showInputBox: vi.fn(async () => undefined),
     showQuickPick: vi.fn(async () => undefined),
+    onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
     executeCommand: vi.fn(async () => undefined),
     registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
     spawn: vi.fn(),
@@ -66,6 +67,7 @@ vi.mock("vscode", () => {
       showWarningMessage: mocks.showWarningMessage,
       showInputBox: mocks.showInputBox,
       showQuickPick: mocks.showQuickPick,
+      onDidChangeWindowState: mocks.onDidChangeWindowState,
       registerWebviewViewProvider: mocks.registerWebviewViewProvider,
     },
     commands: {
@@ -98,6 +100,7 @@ import {
   isRecord,
   isStringArray,
   isStringRecord,
+  isWorktreeSessionHandoff,
   parseWorktreeSelection,
   registryUrl,
   resolveAnvilExecutable,
@@ -114,7 +117,7 @@ import type {
   WorktreeSelection,
 } from "../src/worktrees";
 
-function extensionContext(saved?: unknown) {
+function extensionContext(saved?: unknown, globalValues = new Map<string, unknown>()) {
   const workspaceValues = new Map<string, unknown>();
   if (saved !== undefined) workspaceValues.set("brokkAcp.sessions.v1", saved);
   return {
@@ -126,6 +129,16 @@ function extensionContext(saved?: unknown) {
       get: vi.fn((key: string) => workspaceValues.get(key)),
       update: vi.fn(async (key: string, value: unknown) => {
         workspaceValues.set(key, value);
+      }),
+    },
+    globalState: {
+      get: vi.fn((key: string) => globalValues.get(key)),
+      update: vi.fn(async (key: string, value: unknown) => {
+        if (value === undefined) {
+          globalValues.delete(key);
+        } else {
+          globalValues.set(key, value);
+        }
       }),
     },
     secrets: {
@@ -332,6 +345,20 @@ describe("extension validation helpers", () => {
     expect(isStringRecord({ A: 1 })).toBe(false);
     expect(isLaunchSpec(launch())).toBe(true);
     expect(isLaunchSpec({ command: "a", args: [], env: { A: 1 } })).toBe(false);
+    expect(
+      isWorktreeSessionHandoff({
+        version: 1,
+        agentId: "bundled:anvil",
+        cwd: "/workspace/.brokk/worktrees/bright-fox",
+        worktree: {
+          projectRoot: "/workspace",
+          worktreeRoot: "/workspace/.brokk/worktrees/bright-fox",
+          name: "bright-fox",
+          managed: true,
+        },
+      }),
+    ).toBe(true);
+    expect(isWorktreeSessionHandoff({ version: 1, cwd: "/workspace" })).toBe(false);
     expect(
       isEnvAuthMethod({
         type: "env_var",
@@ -985,8 +1012,9 @@ describe("ChatView", () => {
     expect(host.sent.at(-1)).toEqual({ type: "new_session" });
   });
 
-  it("routes each worktree through a distinct host connection and opens it in VS Code", async () => {
-    const context = extensionContext();
+  it("hands a new worktree session to the VS Code window opened for that checkout", async () => {
+    const globalValues = new Map<string, unknown>();
+    const context = extensionContext(undefined, globalValues);
     const host = new FakeHost();
     const choice = agent();
     const worktrees = new FakeWorktrees();
@@ -1007,17 +1035,15 @@ describe("ChatView", () => {
     expect(worktrees.resolved).toEqual([
       { cwd: "/workspace", selection: { kind: "create" } },
     ]);
-    expect(host.connected.at(-1)).toMatchObject({
-      cwd: "/workspace/.brokk/worktrees/bright-fox",
-      session: { mode: "new" },
-    });
-
-    host.fire({ type: "connecting", connection_id: 22 });
-    host.fire({ type: "connected", connection_id: 22, agent_capabilities: {} });
-    host.fire({ type: "session_started", session_id: "worktree-session", method: "new" });
-    await resolved.receive({ type: "open_worktree" });
-    expect(worktrees.validated.at(-1)?.cwd).toBe(
-      "/workspace/.brokk/worktrees/bright-fox",
+    expect(host.connected).toEqual([]);
+    expect(context.globalState.update).toHaveBeenCalledWith(
+      "brokkAcp.worktreeSessionHandoff.v1",
+      expect.objectContaining({
+        version: 1,
+        agentId: choice.id,
+        cwd: "/workspace/.brokk/worktrees/bright-fox",
+        worktree: expect.objectContaining({ name: "bright-fox" }),
+      }),
     );
     expect(mocks.executeCommand).toHaveBeenCalledWith(
       "vscode.openFolder",
@@ -1025,22 +1051,84 @@ describe("ChatView", () => {
       { forceNewWindow: true },
     );
 
-    await resolved.receive({ type: "show_start" });
-    await resolved.receive({
-      type: "new_session",
-      agent_id: choice.id,
-      working_directory: { kind: "existing", path: "/other/worktree" },
-    });
-    expect(host.disconnectCalls).toBe(1);
-    host.fire({ type: "disconnected", connection_id: 22 });
-    await vi.runAllTimersAsync();
-    expect(host.connected.at(-1)).toMatchObject({
-      cwd: "/other/worktree",
+    (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [
+      { uri: { fsPath: "/workspace/.brokk/worktrees/bright-fox" } },
+    ];
+    const targetContext = extensionContext(undefined, globalValues);
+    const targetHost = new FakeHost();
+    const targetWorktrees = new FakeWorktrees();
+    const target = new ChatView(
+      targetContext,
+      targetHost as never,
+      catalogWith(targetContext, [choice]),
+      targetWorktrees,
+    );
+    expect(await target.acceptPendingWorktreeHandoff()).toBe(true);
+    expect(targetWorktrees.validated).toEqual([
+      {
+        cwd: "/workspace/.brokk/worktrees/bright-fox",
+        worktree: expect.objectContaining({ name: "bright-fox" }),
+      },
+    ]);
+    expect(targetHost.connected.at(-1)).toMatchObject({
+      cwd: "/workspace/.brokk/worktrees/bright-fox",
       session: { mode: "new" },
     });
+    expect(targetContext.globalState.update).toHaveBeenLastCalledWith(
+      "brokkAcp.worktreeSessionHandoff.v1",
+      undefined,
+    );
+    expect(mocks.executeCommand).toHaveBeenCalledWith("brokkAcp.chat.focus");
+
+    targetHost.fire({ type: "connecting", connection_id: 22 });
+    targetHost.fire({ type: "connected", connection_id: 22, agent_capabilities: {} });
+    targetHost.fire({ type: "session_started", session_id: "worktree-session", method: "new" });
+    mocks.executeCommand.mockClear();
+    const targetView = fakeView();
+    target.resolveWebviewView(targetView.view);
+    await targetView.receive({ type: "open_worktree" });
+    expect(targetWorktrees.validated.at(-1)?.cwd).toBe(
+      "/workspace/.brokk/worktrees/bright-fox",
+    );
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.openFolder",
+      { fsPath: "/workspace/.brokk/worktrees/bright-fox" },
+      { forceNewWindow: true },
+    );
+  });
+
+  it("keeps the worktree agent connection when VS Code cannot open the checkout", async () => {
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      new FakeWorktrees(),
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+    mocks.executeCommand.mockRejectedValueOnce(new Error("window blocked"));
+
+    await chat.newSession(choice.id, { kind: "create" });
+    await Promise.resolve();
+
+    expect(host.connected.at(-1)?.cwd).toBe(
+      "/workspace/.brokk/worktrees/bright-fox",
+    );
+    expect(
+      (resolved.posted.at(-1) as { state: { banner: string } }).state.banner,
+    ).toContain("agent is running in bright-fox");
+    expect(
+      (resolved.posted.at(-1) as { state: { banner: string } }).state.banner,
+    ).toContain("window blocked");
   });
 
   it("offers safe managed-worktree cleanup only after ACP session deletion", async () => {
+    (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [
+      { uri: { fsPath: "/workspace/.brokk/worktrees/bright-fox" } },
+    ];
     const context = extensionContext();
     const host = new FakeHost();
     const choice = agent();
@@ -1053,6 +1141,16 @@ describe("ChatView", () => {
     );
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
+    worktrees.resolveResult = {
+      cwd: "/workspace/.brokk/worktrees/bright-fox",
+      created: true,
+      worktree: {
+        projectRoot: "/workspace",
+        worktreeRoot: "/workspace/.brokk/worktrees/bright-fox",
+        name: "bright-fox",
+        managed: true,
+      },
+    };
     await chat.newSession(choice.id, { kind: "create" });
     host.fire({ type: "connecting", connection_id: 23 });
     host.fire({ type: "connected", connection_id: 23, agent_capabilities: {} });
@@ -1148,6 +1246,13 @@ describe("activate", () => {
     expect(mocks.registeredCommands.has("brokkAcp.connect")).toBe(true);
     expect(mocks.registeredCommands.has("brokkAcp.disconnect")).toBe(true);
     expect(mocks.registeredCommands.has("brokkAcp.refreshAgents")).toBe(true);
-    expect(context.subscriptions.length).toBe(6);
+    expect(context.subscriptions.length).toBe(7);
+
+    await mocks.registeredCommands.get("brokkAcp.connect")?.();
+    expect(mocks.executeCommand).toHaveBeenCalledWith("brokkAcp.chat.focus");
+    expect(context.workspaceState.update).toHaveBeenCalledWith(
+      "brokkAcp.selectedAgent",
+      "bundled:anvil",
+    );
   });
 });

@@ -6,6 +6,8 @@
   exact checkout persistence and recovery, and guarded cleanup.
 - Keep streaming activity on only the current transcript segment so tool and
   thought interleaving cannot leave duplicate blinking cursors behind.
+- Default Git sessions to isolated worktrees and automatically open the
+  selected checkout in a matching VS Code window.
 
 ## 0.3.8 - 2026-07-27
 

@@ -49,7 +49,10 @@ Markdown, and the prompt composer together in the VS Code sidebar.
 - New sessions can use the current workspace, create a detached checkout under
   `.brokk/worktrees/`, or reuse any registered Git worktree. Nested workspace
   paths are preserved, and the chosen checkout becomes the ACP process,
-  filesystem, and terminal boundary.
+  filesystem, and terminal boundary. The new-session screen in Git workspaces
+  defaults to an isolated checkout; choosing a worktree also opens that exact
+  folder in a new VS Code window so the editor and agent operate on the same
+  files.
 - Saved worktree sessions reopen in their recorded checkout. If that checkout
   disappears, Brokk ACP asks for an explicit replacement instead of silently
   falling back to the main workspace.
@@ -121,8 +124,10 @@ code --install-extension brokk.brokk-vscode-acp
 1. Open a trusted folder or workspace in VS Code.
 2. Open **Brokk ACP** from the Activity Bar.
 3. Choose bundled **Anvil**, an installed registry agent, or a custom agent.
-4. Choose the current workspace, a new named worktree, or an existing
-   registered worktree. Then start a new session, or open **Sessions** to
+4. Use the recommended new isolated worktree, choose an existing registered
+   worktree, or explicitly opt into the shared current workspace. Starting a
+   worktree session opens the selected checkout in a new VS Code window and
+   runs the agent against that same path. You can also open **Sessions** to
    discover and resume sessions exposed by that agent.
 5. Prompt the agent from the composer. Use `/` to discover commands advertised
    for the active session. For image-capable agents, use the attachment button,
