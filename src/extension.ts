@@ -390,6 +390,15 @@ interface PendingConnection {
   worktree?: SessionWorktree;
 }
 
+interface WorktreeSessionHandoff {
+  version: 1;
+  agentId: string;
+  cwd: string;
+  worktree: SessionWorktree;
+}
+
+const WORKTREE_HANDOFF_KEY = "brokkAcp.worktreeSessionHandoff.v1";
+
 export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private readonly subscription: vscode.Disposable;
@@ -446,24 +455,97 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
     await this.catalog.select(agent.id);
     const selectedWorkspace = await this.worktrees.resolve(workspacePath(), worktreeSelection);
+    if (
+      selectedWorkspace.worktree &&
+      !samePath(selectedWorkspace.cwd, workspacePath())
+    ) {
+      if (selectedWorkspace.created) {
+        void this.refreshWorktrees().then(() => this.postState());
+      }
+      await this.handoffNewSession(agent, selectedWorkspace.cwd, selectedWorkspace.worktree);
+      return;
+    }
+    this.startNewSession(agent, selectedWorkspace.cwd, selectedWorkspace.worktree);
+  }
+
+  async acceptPendingWorktreeHandoff(): Promise<boolean> {
+    const handoff = this.context.globalState.get<WorktreeSessionHandoff>(
+      WORKTREE_HANDOFF_KEY,
+    );
+    if (!isWorktreeSessionHandoff(handoff)) {
+      return false;
+    }
+    let currentWorkspace: string;
+    try {
+      currentWorkspace = workspacePath();
+    } catch {
+      return false;
+    }
+    if (!samePath(handoff.cwd, currentWorkspace)) {
+      return false;
+    }
+    const agent = this.catalog.get(handoff.agentId);
+    if (!agent?.launch) {
+      return false;
+    }
+    await this.context.globalState.update(WORKTREE_HANDOFF_KEY, undefined);
+    try {
+      await this.worktrees.validate(handoff.cwd, handoff.worktree);
+    } catch (error) {
+      this.showStart = true;
+      this.banner =
+        error instanceof Error
+          ? `Could not start the worktree session: ${error.message}`
+          : "Could not start the worktree session.";
+      this.postState();
+      return true;
+    }
+    await this.catalog.select(agent.id);
+    this.restorePending = false;
+    this.startNewSession(agent, handoff.cwd, handoff.worktree);
+    await vscode.commands.executeCommand("brokkAcp.chat.focus");
+    return true;
+  }
+
+  private startNewSession(
+    agent: AgentChoice,
+    cwd: string,
+    worktree?: SessionWorktree,
+  ): void {
     this.sessions.create(
       { id: agent.id, name: agent.name },
-      selectedWorkspace.cwd,
-      selectedWorkspace.worktree,
+      cwd,
+      worktree,
     );
     this.relinkLocalId = undefined;
     this.showStart = false;
-    this.startConnection(
-      agent,
-      { mode: "new" },
-      selectedWorkspace.cwd,
-      selectedWorkspace.worktree,
-    );
-    if (selectedWorkspace.worktree) {
-      this.openWorktreeAutomatically(selectedWorkspace.cwd, selectedWorkspace.worktree);
-    }
-    if (selectedWorkspace.created) {
-      void this.refreshWorktrees().then(() => this.postState());
+    this.startConnection(agent, { mode: "new" }, cwd, worktree);
+  }
+
+  private async handoffNewSession(
+    agent: AgentChoice,
+    cwd: string,
+    worktree: SessionWorktree,
+  ): Promise<void> {
+    const handoff: WorktreeSessionHandoff = {
+      version: 1,
+      agentId: agent.id,
+      cwd,
+      worktree,
+    };
+    await this.context.globalState.update(WORKTREE_HANDOFF_KEY, handoff);
+    this.banner = `Opening ${worktree.name} and starting ${agent.name} there…`;
+    this.postState();
+    try {
+      await this.openWorktreeInVsCode(cwd);
+    } catch (error) {
+      await this.context.globalState.update(WORKTREE_HANDOFF_KEY, undefined);
+      this.startNewSession(agent, cwd, worktree);
+      const detail = error instanceof Error ? error.message : String(error);
+      this.banner =
+        `The agent is running in ${worktree.name}, but VS Code could not open ` +
+        `that checkout automatically: ${detail}`;
+      this.postState();
     }
   }
 
@@ -499,7 +581,11 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     switch (event.type) {
       case "catalog":
         this.catalog.updateOfficial(event.agents);
-        void this.restoreActiveSession();
+        void this.acceptPendingWorktreeHandoff().then((accepted) => {
+          if (!accepted) {
+            void this.restoreActiveSession();
+          }
+        });
         break;
       case "catalog_loading":
         break;
@@ -678,7 +764,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           await this.host.listAgents();
           await this.refreshWorktrees();
           this.postState();
-          void this.restoreActiveSession();
+          if (!(await this.acceptPendingWorktreeHandoff())) {
+            void this.restoreActiveSession();
+          }
           break;
         case "select_agent":
           if (typeof message.agent_id === "string") {
@@ -1236,7 +1324,13 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("brokkAcp.disconnect", () => host.disconnectSession()),
     vscode.commands.registerCommand("brokkAcp.refreshAgents", () => host.listAgents()),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (state.focused) {
+        void chat.acceptPendingWorktreeHandoff();
+      }
+    }),
   );
+  void chat.acceptPendingWorktreeHandoff();
 }
 
 export function workspacePath(): string {
@@ -1328,6 +1422,20 @@ export function isEnvAuthMethod(value: unknown): value is EnvAuthMethod {
       (variable.label === undefined || typeof variable.label === "string") &&
       (variable.secret === undefined || typeof variable.secret === "boolean") &&
       (variable.optional === undefined || typeof variable.optional === "boolean"),
+  );
+}
+
+export function isWorktreeSessionHandoff(value: unknown): value is WorktreeSessionHandoff {
+  return (
+    isRecord(value) &&
+    value.version === 1 &&
+    typeof value.agentId === "string" &&
+    typeof value.cwd === "string" &&
+    isRecord(value.worktree) &&
+    typeof value.worktree.projectRoot === "string" &&
+    typeof value.worktree.worktreeRoot === "string" &&
+    typeof value.worktree.name === "string" &&
+    typeof value.worktree.managed === "boolean"
   );
 }
 
