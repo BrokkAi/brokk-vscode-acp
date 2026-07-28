@@ -303,6 +303,7 @@ export class SessionStore {
     if (!session) {
       return;
     }
+    this.completeStreamingContent(session);
     const turnId = randomUUID();
     this.activeTurnId = turnId;
     session.status = "running";
@@ -339,12 +340,7 @@ export class SessionStore {
     }
     session.status = "ready";
     session.usage = usage ?? session.usage;
-    const streamingEntries = session.entries.filter(
-      (entry) => entry.turnId === this.activeTurnId && entry.status === "streaming",
-    );
-    for (const entry of streamingEntries) {
-      entry.status = stopReason || "completed";
-    }
+    this.completeStreamingContent(session, stopReason || "completed");
     this.activeTurnId = undefined;
     this.touch(session);
   }
@@ -417,6 +413,7 @@ export class SessionStore {
     if (!session) {
       return;
     }
+    this.completeStreamingContent(session);
     const tool = isRecord(toolCall) ? toolCall : {};
     session.entries.push({
       id: randomUUID(),
@@ -446,6 +443,7 @@ export class SessionStore {
     if (!session) {
       return;
     }
+    this.completeStreamingContent(session, "error");
     session.status = "error";
     session.entries.push({
       id: randomUUID(),
@@ -468,6 +466,7 @@ export class SessionStore {
       if (session.status !== "error") {
         session.status = "disconnected";
       }
+      this.completeStreamingContent(session);
       this.touch(session);
     }
     this.activeTurnId = undefined;
@@ -544,6 +543,7 @@ export class SessionStore {
       }
       return;
     }
+    this.completeStreamingContent(session);
     session.entries.push({
       id: randomUUID(),
       kind,
@@ -565,6 +565,7 @@ export class SessionStore {
       (candidate) => candidate.kind === "tool" && candidate.toolCallId === toolCallId,
     );
     if (!entry) {
+      this.completeStreamingContent(session);
       entry = {
         id: randomUUID(),
         kind: "tool",
@@ -588,6 +589,20 @@ export class SessionStore {
     assign("locations", Array.isArray(value.locations) ? value.locations : undefined);
     assign("rawInput", value.rawInput);
     assign("rawOutput", value.rawOutput);
+  }
+
+  private completeStreamingContent(
+    session: SessionRecord,
+    status = "completed",
+  ): void {
+    for (const entry of session.entries) {
+      if (
+        entry.status === "streaming" &&
+        (entry.kind === "user" || entry.kind === "assistant" || entry.kind === "thought")
+      ) {
+        entry.status = status;
+      }
+    }
   }
 
   private touch(session: SessionRecord): void {

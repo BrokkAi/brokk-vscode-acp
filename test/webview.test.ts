@@ -399,6 +399,89 @@ describe("webview client", () => {
     expect(harness.posted.at(-1)).toEqual({ type: "cancel" });
   });
 
+  it("renders at most one caret on the active assistant fragment", async () => {
+    const harness = await createHarness();
+    const entries = [
+      {
+        id: "assistant-before-tool",
+        kind: "assistant",
+        text: "I will inspect the issue.",
+        status: "streaming",
+        createdAt: "2026-07-28T00:00:00Z",
+      },
+      {
+        id: "tool",
+        kind: "tool",
+        title: "Read source",
+        status: "completed",
+        createdAt: "2026-07-28T00:00:01Z",
+      },
+      {
+        id: "assistant-active",
+        kind: "assistant",
+        text: "The source shows",
+        status: "streaming",
+        createdAt: "2026-07-28T00:00:02Z",
+      },
+    ];
+    await harness.sendState(
+      baseState({
+        active: activeSession({ status: "running", entries }),
+      }),
+    );
+
+    const carets = harness.document.querySelectorAll(".streaming-caret");
+    expect(carets).toHaveLength(1);
+    expect(carets[0].closest("[data-entry-id]")?.getAttribute("data-entry-id")).toBe(
+      "assistant-active",
+    );
+
+    await harness.sendState(
+      baseState({
+        active: activeSession({
+          status: "running",
+          entries: [
+            ...entries,
+            {
+              id: "tool-active",
+              kind: "tool",
+              title: "Run tests",
+              status: "pending",
+              createdAt: "2026-07-28T00:00:03Z",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(harness.document.querySelectorAll(".streaming-caret")).toHaveLength(0);
+
+    await harness.sendState(
+      baseState({
+        active: activeSession({
+          status: "running",
+          entries: [
+            ...entries,
+            {
+              id: "empty-assistant",
+              kind: "assistant",
+              text: "",
+              status: "streaming",
+              createdAt: "2026-07-28T00:00:03Z",
+            },
+          ],
+        }),
+      }),
+    );
+    expect(harness.document.querySelectorAll(".streaming-caret")).toHaveLength(0);
+
+    await harness.sendState(
+      baseState({
+        active: activeSession({ status: "ready", entries }),
+      }),
+    );
+    expect(harness.document.querySelectorAll(".streaming-caret")).toHaveLength(0);
+  });
+
   it("offers advertised slash commands and submits prompts", async () => {
     const harness = await createHarness();
     await harness.sendState(
