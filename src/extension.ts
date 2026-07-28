@@ -9,13 +9,13 @@ import { webviewHtml } from "./webview";
 
 type HostEvent = { type: string; [key: string]: unknown };
 
-interface LaunchSpec {
+export interface LaunchSpec {
   command: string;
   args: string[];
   env: Record<string, string>;
 }
 
-interface HostSessionSelection {
+export interface HostSessionSelection {
   mode: "browse" | "new" | "open";
   session_id?: string;
   replay?: boolean;
@@ -28,7 +28,7 @@ interface CustomAgentConfig {
   env?: Record<string, string>;
 }
 
-interface AgentChoice {
+export interface AgentChoice {
   id: string;
   registryId?: string;
   source: "bundled" | "custom" | "registry";
@@ -61,14 +61,14 @@ interface EnvAuthVariable {
   optional?: boolean;
 }
 
-interface EnvAuthMethod {
+export interface EnvAuthMethod {
   type: "env_var";
   id: string;
   name: string;
   vars: EnvAuthVariable[];
 }
 
-class AgentCatalog {
+export class AgentCatalog {
   private official = new Map<string, AgentChoice>();
 
   constructor(private readonly context: vscode.ExtensionContext) {}
@@ -79,6 +79,9 @@ class AgentCatalog {
     }
     this.official.clear();
     for (const value of entries) {
+      if (!isRecord(value)) {
+        continue;
+      }
       const agent = value as Partial<RegistryAgent>;
       if (
         typeof agent.id !== "string" ||
@@ -196,7 +199,7 @@ class AgentCatalog {
   }
 }
 
-class RustHost implements vscode.Disposable {
+export class RustHost implements vscode.Disposable {
   private child: ChildProcessWithoutNullStreams | undefined;
   private currentLaunch: LaunchSpec | undefined;
   private currentSession: HostSessionSelection = { mode: "browse" };
@@ -374,7 +377,7 @@ interface PendingConnection {
   selection: HostSessionSelection;
 }
 
-class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
+export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private view: vscode.WebviewView | undefined;
   private readonly subscription: vscode.Disposable;
   private readonly sessions: SessionStore;
@@ -403,7 +406,7 @@ class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     this.view = view;
     view.webview.options = { enableScripts: true };
     view.webview.html = webviewHtml(view.webview);
-    view.webview.onDidReceiveMessage((message) => void this.handleMessage(message));
+    view.webview.onDidReceiveMessage((message) => this.handleMessage(message));
   }
 
   dispose(): void {
@@ -926,7 +929,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-function workspacePath(): string {
+export function workspacePath(): string {
   const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspace) {
     throw new Error("Open a workspace before using an ACP agent.");
@@ -934,7 +937,7 @@ function workspacePath(): string {
   return workspace;
 }
 
-function registryUrl(): string {
+export function registryUrl(): string {
   return vscode.workspace
     .getConfiguration("brokkAcp")
     .get<string>(
@@ -943,7 +946,7 @@ function registryUrl(): string {
     );
 }
 
-function resolveAnvilExecutable(context: vscode.ExtensionContext): string {
+export function resolveAnvilExecutable(context: vscode.ExtensionContext): string {
   const override = vscode.workspace
     .getConfiguration("brokkAcp")
     .get<string>("anvil.path", "")
@@ -977,7 +980,7 @@ function resolveAnvilExecutable(context: vscode.ExtensionContext): string {
   return name;
 }
 
-function isLaunchSpec(value: unknown): value is LaunchSpec {
+export function isLaunchSpec(value: unknown): value is LaunchSpec {
   return (
     isRecord(value) &&
     typeof value.command === "string" &&
@@ -986,19 +989,19 @@ function isLaunchSpec(value: unknown): value is LaunchSpec {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
+export function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
-function isStringArray(value: unknown): value is string[] {
+export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
-function isEnvAuthMethod(value: unknown): value is EnvAuthMethod {
+export function isEnvAuthMethod(value: unknown): value is EnvAuthMethod {
   if (
     !isRecord(value) ||
     value.type !== "env_var" ||

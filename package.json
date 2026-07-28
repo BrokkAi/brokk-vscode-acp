@@ -144,7 +144,11 @@
     "compile:rust:release": "cargo build --release --package brokk-acp-host",
     "compile:extension": "esbuild src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=dist/extension.js",
     "check": "tsc --noEmit && cargo check --workspace",
-    "test": "npm run check && cargo test --workspace --locked && npm run test:markdown && npm run test:webview-layout && npm run test:plans && npm run test:lifecycle && npm run test:packaging-command && npm run release:check",
+    "test": "npm run check && npm run coverage && npm run test:markdown && npm run test:webview-layout && npm run test:plans && npm run test:lifecycle && npm run test:packaging-command && npm run release:check",
+    "test:unit": "vitest run",
+    "coverage": "npm run coverage:typescript && npm run coverage:rust",
+    "coverage:typescript": "vitest run --coverage",
+    "coverage:rust": "cargo llvm-cov --workspace --all-features --locked --lcov --output-path coverage-rust.lcov && node scripts/check-rust-coverage.mjs coverage-rust.lcov",
     "test:markdown": "node scripts/test-markdown.mjs",
     "test:plans": "node scripts/test-plans.mjs",
     "test:webview-layout": "node scripts/test-webview-layout.mjs",
@@ -160,9 +164,12 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/vscode": "^1.95.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "@vscode/vsce": "^3.6.0",
     "esbuild": "^0.25.0",
     "extract-zip": "^2.0.1",
-    "typescript": "^5.8.0"
+    "happy-dom": "^20.11.1",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.10"
   }
 }

@@ -700,6 +700,36 @@ fn command_extensions() -> Vec<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+    use std::net::TcpListener;
+
+    fn serve_once(path: &str, body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test HTTP server");
+        let address = listener.local_addr().expect("test server address");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept HTTP request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read HTTP request");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("write HTTP headers");
+            stream.write_all(&body).expect("write HTTP body");
+        });
+        format!("http://{address}{path}")
+    }
+
+    fn checksum(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        Sha256::digest(bytes)
+            .iter()
+            .fold(String::new(), |mut output, byte| {
+                let _ = write!(output, "{byte:02x}");
+                output
+            })
+    }
 
     fn manifest(distribution: Distribution) -> AgentManifest {
         AgentManifest {
@@ -840,5 +870,380 @@ mod tests {
             "new"
         );
         assert!(!source.exists());
+    }
+
+    #[tokio::test]
+    async fn fetches_validates_caches_and_falls_back_to_cached_registry() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "version": "test",
+            "agents": [{
+                "id": "cached-agent",
+                "name": "Cached Agent",
+                "version": "1.0.0",
+                "description": "Test",
+                "distribution": {}
+            }]
+        }))
+        .expect("registry JSON");
+        let url = serve_once("/registry.json", bytes.clone());
+        let (registry, cached) = fetch_registry(&url, temporary.path())
+            .await
+            .expect("fetch registry");
+        assert_eq!(registry.version, "test");
+        assert!(!cached);
+        assert_eq!(
+            fs::read(temporary.path().join("registry.json")).expect("cached registry"),
+            bytes
+        );
+
+        let (registry, cached) = fetch_registry("http://127.0.0.1:1/unavailable", temporary.path())
+            .await
+            .expect("fall back to cache");
+        assert_eq!(registry.agents[0].id, "cached-agent");
+        assert!(cached);
+
+        let empty = tempfile::tempdir().expect("empty cache");
+        assert!(
+            fetch_registry("http://127.0.0.1:1/unavailable", empty.path())
+                .await
+                .expect_err("missing cache")
+                .to_string()
+                .contains("no cached registry")
+        );
+        fs::write(empty.path().join("registry.json"), b"not json").expect("invalid cache");
+        assert!(
+            fetch_registry("http://127.0.0.1:1/unavailable", empty.path())
+                .await
+                .expect_err("invalid cache")
+                .to_string()
+                .contains("parsing cached registry")
+        );
+    }
+
+    #[tokio::test]
+    async fn installs_raw_binary_and_reuses_verified_marker() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let binary = b"#!/bin/sh\nexit 0\n".to_vec();
+        let archive = serve_once("/agent.bin?download=1", binary.clone());
+        let platform = platform_target().expect("supported test platform");
+        let distribution = Distribution {
+            binary: HashMap::from([(
+                platform,
+                BinaryTarget {
+                    archive,
+                    cmd: "bin/test-agent".into(),
+                    args: vec!["--stdio".into()],
+                    env: HashMap::from([("TEST_ENV".into(), "set".into())]),
+                    sha256: Some(checksum(&binary)),
+                },
+            )]),
+            ..Distribution::default()
+        };
+        let registry = Registry {
+            version: "test".into(),
+            agents: vec![manifest(distribution)],
+        };
+        let incomplete = install_root(temporary.path(), &registry.agents[0]).expect("install root");
+        fs::create_dir_all(&incomplete).expect("incomplete install");
+        fs::write(incomplete.join("leftover"), "old").expect("old file");
+
+        let launch = install(&registry, "test-agent", temporary.path())
+            .await
+            .expect("install binary");
+        assert!(launch.command.is_file());
+        assert_eq!(launch.args, vec!["--stdio"]);
+        assert_eq!(launch.env.get("TEST_ENV").map(String::as_str), Some("set"));
+        assert!(!incomplete.join("leftover").exists());
+        let marker = fs::read(incomplete.join("install.json")).expect("install marker");
+        assert!(
+            serde_json::from_slice::<InstallMarker>(&marker).is_ok(),
+            "marker is valid"
+        );
+
+        let cached = install(&registry, "test-agent", temporary.path())
+            .await
+            .expect("reuse installed binary");
+        assert_eq!(cached, launch);
+        let summary = summarize(&registry, temporary.path());
+        assert!(summary[0].installed);
+        assert_eq!(summary[0].distribution.as_deref(), Some("binary"));
+        assert!(summary[0].launch.is_some());
+        assert!(
+            install(&registry, "missing", temporary.path())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_binary_install_metadata_and_checksums() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let platform = platform_target().expect("supported test platform");
+        let target = |archive: String, checksum: Option<String>| BinaryTarget {
+            archive,
+            cmd: "agent".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            sha256: checksum,
+        };
+        let registry_with = |binary: BinaryTarget| Registry {
+            version: "test".into(),
+            agents: vec![manifest(Distribution {
+                binary: HashMap::from([(platform.clone(), binary)]),
+                ..Distribution::default()
+            })],
+        };
+
+        let body = b"binary".to_vec();
+        let no_checksum = registry_with(target(serve_once("/agent", body.clone()), None));
+        assert!(
+            install(&no_checksum, "test-agent", temporary.path())
+                .await
+                .expect_err("missing checksum")
+                .to_string()
+                .contains("does not provide")
+        );
+        let bad_checksum = registry_with(target(serve_once("/agent", body), Some("00".repeat(32))));
+        assert!(
+            install(&bad_checksum, "test-agent", temporary.path())
+                .await
+                .expect_err("checksum mismatch")
+                .to_string()
+                .contains("checksum mismatch")
+        );
+        assert!(validate_download_url("file:///tmp/agent").is_err());
+        assert!(validate_download_url("not a URL").is_err());
+    }
+
+    #[test]
+    fn extracts_supported_archives_and_rejects_unsafe_tar_entries() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        extract_archive(
+            "https://example.test/raw?download=1",
+            b"raw",
+            temporary.path(),
+            Path::new("nested/raw-agent"),
+        )
+        .expect("extract raw binary");
+        assert_eq!(
+            fs::read(temporary.path().join("nested/raw-agent")).expect("raw output"),
+            b"raw"
+        );
+
+        let mut zip_cursor = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut zip_cursor);
+            let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+            archive
+                .add_directory("bin/", options)
+                .expect("add ZIP directory");
+            archive
+                .start_file("bin/zip-agent", options)
+                .expect("add ZIP file");
+            archive.write_all(b"zip").expect("write ZIP file");
+            archive.finish().expect("finish ZIP");
+        }
+        let zip_output = tempfile::tempdir().expect("ZIP output");
+        extract_archive(
+            "https://example.test/agent.ZIP#asset",
+            zip_cursor.get_ref(),
+            zip_output.path(),
+            Path::new("ignored"),
+        )
+        .expect("extract ZIP");
+        assert_eq!(
+            fs::read(zip_output.path().join("bin/zip-agent")).expect("ZIP output file"),
+            b"zip"
+        );
+
+        let tar_bytes = {
+            let mut bytes = Vec::new();
+            {
+                let mut archive = tar::Builder::new(&mut bytes);
+                let mut header = tar::Header::new_gnu();
+                header.set_size(3);
+                header.set_mode(0o755);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, "bin/tar-agent", Cursor::new(b"tar"))
+                    .expect("append tar file");
+                archive.finish().expect("finish tar");
+            }
+            bytes
+        };
+        let gzip = {
+            use flate2::Compression;
+            use flate2::write::GzEncoder;
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&tar_bytes).expect("gzip tar");
+            encoder.finish().expect("finish gzip")
+        };
+        let gzip_output = tempfile::tempdir().expect("gzip output");
+        extract_archive(
+            "https://example.test/agent.tgz",
+            &gzip,
+            gzip_output.path(),
+            Path::new("ignored"),
+        )
+        .expect("extract gzip tar");
+        assert_eq!(
+            fs::read(gzip_output.path().join("bin/tar-agent")).expect("tar output"),
+            b"tar"
+        );
+
+        let bzip = {
+            use bzip2::Compression;
+            use bzip2::write::BzEncoder;
+            let mut encoder = BzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(&tar_bytes).expect("bzip tar");
+            encoder.finish().expect("finish bzip")
+        };
+        let bzip_output = tempfile::tempdir().expect("bzip output");
+        extract_archive(
+            "https://example.test/agent.tbz2",
+            &bzip,
+            bzip_output.path(),
+            Path::new("ignored"),
+        )
+        .expect("extract bzip tar");
+        assert_eq!(
+            fs::read(bzip_output.path().join("bin/tar-agent")).expect("bzip output"),
+            b"tar"
+        );
+
+        let mut linked_tar = Vec::new();
+        {
+            let mut archive = tar::Builder::new(&mut linked_tar);
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_link_name("../outside").expect("link target");
+            header.set_cksum();
+            archive
+                .append_data(&mut header, "link", io::empty())
+                .expect("append symlink");
+            archive.finish().expect("finish linked tar");
+        }
+        assert!(
+            extract_tar(Cursor::new(linked_tar), temporary.path())
+                .expect_err("reject tar links")
+                .to_string()
+                .contains("unsupported")
+        );
+    }
+
+    #[test]
+    fn summarizes_binary_and_package_distributions_and_validates_markers() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let platform = platform_target().expect("supported test platform");
+        let binary_manifest = manifest(Distribution {
+            binary: HashMap::from([(
+                platform.clone(),
+                BinaryTarget {
+                    archive: "https://example.test/agent".into(),
+                    cmd: "agent".into(),
+                    args: Vec::new(),
+                    env: HashMap::new(),
+                    sha256: Some("00".repeat(32)),
+                },
+            )]),
+            ..Distribution::default()
+        });
+        let binary = summarize_agent(&binary_manifest, temporary.path(), Some(platform.as_str()));
+        assert!(binary.available);
+        assert!(!binary.installed);
+        assert_eq!(binary.distribution.as_deref(), Some("binary"));
+
+        let package_manifest = manifest(Distribution {
+            npx: Some(PackageTarget {
+                package: "test-agent@1.2.3".into(),
+                args: vec!["--flag".into()],
+                env: HashMap::new(),
+            }),
+            ..Distribution::default()
+        });
+        let package = summarize_agent(&package_manifest, temporary.path(), None);
+        assert_eq!(package.distribution.as_deref(), Some("npx"));
+        assert_eq!(
+            package.launch.expect("npx launch").args,
+            vec!["--yes", "test-agent@1.2.3", "--flag"]
+        );
+
+        let root = install_root(temporary.path(), &binary_manifest).expect("install root");
+        fs::create_dir_all(&root).expect("install directory");
+        fs::write(root.join("install.json"), b"not json").expect("invalid marker");
+        assert!(installed_binary(&binary_manifest, temporary.path()).is_none());
+        fs::write(
+            root.join("install.json"),
+            serde_json::to_vec(&InstallMarker {
+                id: "other".into(),
+                version: binary_manifest.version.clone(),
+                command: "agent".into(),
+                args: Vec::new(),
+                env: HashMap::new(),
+            })
+            .expect("marker JSON"),
+        )
+        .expect("mismatched marker");
+        assert!(installed_binary(&binary_manifest, temporary.path()).is_none());
+    }
+
+    #[test]
+    fn path_command_and_registry_validation_cover_safe_and_unsafe_inputs() {
+        assert!(safe_relative_path(Path::new("")).is_err());
+        assert!(safe_path_component("").is_err());
+        assert!(safe_path_component("two/parts").is_err());
+        assert!(safe_path_component("safe-1.0+test").is_ok());
+        assert!(
+            install_root(
+                Path::new("/tmp"),
+                &AgentManifest {
+                    version: "../bad".into(),
+                    ..manifest(Distribution::default())
+                }
+            )
+            .is_err()
+        );
+        assert!(replace_file(Path::new("/missing"), Path::new("/also-missing")).is_err());
+        assert!(find_command("python3").is_some());
+        assert!(find_command("definitely-not-a-real-brokk-command").is_none());
+        assert!(!command_extensions().is_empty());
+
+        let invalid_command = Registry {
+            version: "test".into(),
+            agents: vec![manifest(Distribution {
+                binary: HashMap::from([(
+                    "test".into(),
+                    BinaryTarget {
+                        archive: "https://example.test/agent".into(),
+                        cmd: "../agent".into(),
+                        args: Vec::new(),
+                        env: HashMap::new(),
+                        sha256: Some("00".repeat(32)),
+                    },
+                )]),
+                ..Distribution::default()
+            })],
+        };
+        assert!(validate_registry(&invalid_command).is_err());
+        let invalid_url = Registry {
+            version: "test".into(),
+            agents: vec![manifest(Distribution {
+                binary: HashMap::from([(
+                    "test".into(),
+                    BinaryTarget {
+                        archive: "file:///tmp/agent".into(),
+                        cmd: "agent".into(),
+                        args: Vec::new(),
+                        env: HashMap::new(),
+                        sha256: Some("00".repeat(32)),
+                    },
+                )]),
+                ..Distribution::default()
+            })],
+        };
+        assert!(validate_registry(&invalid_url).is_err());
     }
 }

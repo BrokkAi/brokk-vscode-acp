@@ -1171,6 +1171,58 @@ async fn emit_session_update(update: SessionUpdate) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Read as _;
+    use std::net::TcpListener;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    async fn next_event(events: &mut UnboundedReceiver<Value>, expected: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = events.recv().await.expect("event channel remains open");
+                if event["type"] == expected {
+                    return event;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for `{expected}`"))
+    }
+
+    fn fake_launch(mode: &str) -> LaunchSpec {
+        LaunchSpec {
+            command: PathBuf::from("python3"),
+            args: vec![
+                "-u".into(),
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/fake_agent.py")
+                    .to_string_lossy()
+                    .into_owned(),
+                mode.into(),
+            ],
+            env: HashMap::new(),
+        }
+    }
+
+    fn serve_registry(body: Vec<u8>, requests: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind registry server");
+        let address = listener.local_addr().expect("registry server address");
+        std::thread::spawn(move || {
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().expect("accept registry request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).expect("read registry request");
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .expect("write registry response headers");
+                stream.write_all(&body).expect("write registry response");
+            }
+        });
+        format!("http://{address}/registry.json")
+    }
 
     #[test]
     fn parses_connect_command_with_defaults() {
@@ -1287,5 +1339,408 @@ mod tests {
             .expect("serialize"),
             json!("allow_once")
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_drives_complete_agent_session_lifecycle() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        EVENTS
+            .set(event_tx)
+            .expect("runtime event channel initialized once");
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        let runtime = tokio::spawn(run(command_rx));
+
+        let registry_storage = tempfile::tempdir().expect("registry storage");
+        let registry_url = serve_registry(
+            serde_json::to_vec(&json!({
+                "version": "test",
+                "agents": [{
+                    "id": "package-agent",
+                    "name": "Package Agent",
+                    "version": "1.0.0",
+                    "description": "Coverage fixture",
+                    "distribution": {
+                        "npx": {"package": "package-agent@1.0.0"}
+                    }
+                }]
+            }))
+            .expect("registry JSON"),
+            2,
+        );
+        command_tx
+            .send(HostCommand::ListAgents {
+                storage_dir: registry_storage.path().to_owned(),
+                registry_url: registry_url.clone(),
+            })
+            .expect("list agents");
+        next_event(&mut events, "catalog_loading").await;
+        assert_eq!(next_event(&mut events, "catalog").await["cached"], false);
+        command_tx
+            .send(HostCommand::InstallAgent {
+                agent_id: "package-agent".into(),
+                storage_dir: registry_storage.path().to_owned(),
+                registry_url,
+            })
+            .expect("install package agent");
+        next_event(&mut events, "installing_agent").await;
+        next_event(&mut events, "agent_installed").await;
+        next_event(&mut events, "catalog").await;
+
+        let empty_storage = tempfile::tempdir().expect("empty registry storage");
+        command_tx
+            .send(HostCommand::ListAgents {
+                storage_dir: empty_storage.path().to_owned(),
+                registry_url: "http://127.0.0.1:1/unavailable".into(),
+            })
+            .expect("list unavailable registry");
+        next_event(&mut events, "catalog_loading").await;
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("registry error")
+                .contains("no cached registry")
+        );
+
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "before connect".into(),
+            })
+            .expect("send command");
+        assert_eq!(
+            next_event(&mut events, "error").await["message"],
+            "connect to an ACP agent before sending session commands"
+        );
+
+        let launch = fake_launch("normal");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::Browse,
+            })
+            .expect("connect");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        next_event(&mut events, "connection_progress").await;
+        assert_eq!(
+            next_event(&mut events, "agent_sessions").await["supported"],
+            true
+        );
+
+        command_tx
+            .send(HostCommand::RefreshSessions)
+            .expect("refresh sessions");
+        next_event(&mut events, "agent_sessions").await;
+        command_tx
+            .send(HostCommand::NewSession)
+            .expect("new session");
+        assert_eq!(
+            next_event(&mut events, "session_started").await["method"],
+            "new"
+        );
+
+        command_tx
+            .send(HostCommand::SetConfig {
+                config_id: "mode".into(),
+                value: json!({"value": "plan"}),
+            })
+            .expect("set config");
+        next_event(&mut events, "config_options").await;
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "build it".into(),
+            })
+            .expect("prompt");
+        next_event(&mut events, "turn_started").await;
+        next_event(&mut events, "session_update").await;
+        assert_eq!(
+            next_event(&mut events, "turn_completed").await["stop_reason"],
+            "end_turn"
+        );
+
+        command_tx
+            .send(HostCommand::DeleteSession {
+                session_id: "session-new".into(),
+            })
+            .expect("delete active session");
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("error message")
+                .contains("active session")
+        );
+        command_tx
+            .send(HostCommand::OpenSession {
+                session_id: "saved-session".into(),
+                replay: true,
+            })
+            .expect("load session");
+        next_event(&mut events, "session_replay_started").await;
+        assert_eq!(
+            next_event(&mut events, "session_started").await["method"],
+            "load"
+        );
+        command_tx
+            .send(HostCommand::DeleteSession {
+                session_id: "session-new".into(),
+            })
+            .expect("delete inactive session");
+        next_event(&mut events, "session_deleted").await;
+        next_event(&mut events, "agent_sessions").await;
+        command_tx
+            .send(HostCommand::Disconnect)
+            .expect("disconnect");
+        assert_eq!(
+            next_event(&mut events, "disconnected").await["reason"],
+            "requested"
+        );
+
+        let launch = fake_launch("resume");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::Open {
+                    session_id: "saved-session".into(),
+                    replay: false,
+                },
+            })
+            .expect("connect resume agent");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        assert_eq!(
+            next_event(&mut events, "session_started").await["method"],
+            "resume"
+        );
+        command_tx
+            .send(HostCommand::Disconnect)
+            .expect("disconnect resume agent");
+        next_event(&mut events, "disconnected").await;
+
+        let launch = fake_launch("reject");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::New,
+            })
+            .expect("connect rejecting agent");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("connection error")
+                .contains("new session rejected")
+        );
+        next_event(&mut events, "disconnected").await;
+
+        let launch = fake_launch("clientio");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::New,
+            })
+            .expect("connect client IO agent");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        next_event(&mut events, "session_started").await;
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("agent-created.txt"))
+                .expect("agent-written file"),
+            "written by fake agent"
+        );
+
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "request permission".into(),
+            })
+            .expect("permission prompt");
+        next_event(&mut events, "turn_started").await;
+        let permission = next_event(&mut events, "permission_request").await;
+        command_tx
+            .send(HostCommand::RefreshSessions)
+            .expect("command during prompt");
+        assert_eq!(
+            next_event(&mut events, "error").await["message"],
+            "a prompt is already running"
+        );
+        command_tx
+            .send(HostCommand::PermissionResponse {
+                request_id: permission["request_id"]
+                    .as_str()
+                    .expect("permission request id")
+                    .into(),
+                option_id: Some("not-offered".into()),
+            })
+            .expect("reject invalid permission option");
+        assert_eq!(
+            next_event(&mut events, "error").await["message"],
+            "permission request is no longer active"
+        );
+        next_event(&mut events, "turn_completed").await;
+
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "approve permission".into(),
+            })
+            .expect("approved permission prompt");
+        next_event(&mut events, "turn_started").await;
+        let permission = next_event(&mut events, "permission_request").await;
+        command_tx
+            .send(HostCommand::PermissionResponse {
+                request_id: permission["request_id"]
+                    .as_str()
+                    .expect("permission request id")
+                    .into(),
+                option_id: Some("allow_once".into()),
+            })
+            .expect("approve permission");
+        next_event(&mut events, "turn_completed").await;
+
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "cancel then finish".into(),
+            })
+            .expect("cancelled permission prompt");
+        next_event(&mut events, "turn_started").await;
+        let permission = next_event(&mut events, "permission_request").await;
+        command_tx.send(HostCommand::Cancel).expect("cancel prompt");
+        command_tx
+            .send(HostCommand::PermissionResponse {
+                request_id: permission["request_id"]
+                    .as_str()
+                    .expect("permission request id")
+                    .into(),
+                option_id: Some("allow_once".into()),
+            })
+            .expect("finish cancelled prompt");
+        next_event(&mut events, "turn_completed").await;
+
+        command_tx
+            .send(HostCommand::PermissionResponse {
+                request_id: "expired".into(),
+                option_id: None,
+            })
+            .expect("expired permission");
+        next_event(&mut events, "error").await;
+        command_tx.send(HostCommand::Cancel).expect("idle cancel");
+        command_tx
+            .send(HostCommand::Authenticate {
+                method_id: "unused".into(),
+            })
+            .expect("unexpected connected command");
+        assert_eq!(
+            next_event(&mut events, "error").await["message"],
+            "already connected"
+        );
+        command_tx
+            .send(HostCommand::Disconnect)
+            .expect("disconnect client IO agent");
+        next_event(&mut events, "disconnected").await;
+
+        let launch = fake_launch("unsupported");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::Browse,
+            })
+            .expect("connect limited agent");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        next_event(&mut events, "connection_progress").await;
+        assert_eq!(
+            next_event(&mut events, "agent_sessions").await["supported"],
+            false
+        );
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "without a session".into(),
+            })
+            .expect("prompt without session");
+        next_event(&mut events, "error").await;
+        command_tx
+            .send(HostCommand::SetConfig {
+                config_id: "mode".into(),
+                value: json!({"value": "plan"}),
+            })
+            .expect("config without session");
+        next_event(&mut events, "error").await;
+        command_tx
+            .send(HostCommand::DeleteSession {
+                session_id: "saved-session".into(),
+            })
+            .expect("unsupported delete");
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("delete error")
+                .contains("does not support session/delete")
+        );
+        next_event(&mut events, "disconnected").await;
+
+        let launch = fake_launch("unsupported");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::Open {
+                    session_id: "saved-session".into(),
+                    replay: false,
+                },
+            })
+            .expect("open unsupported session");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        next_event(&mut events, "connected").await;
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("unsupported session error")
+                .contains("does not support session/load or session/resume")
+        );
+        next_event(&mut events, "disconnected").await;
+
+        let launch = fake_launch("exit");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::Browse,
+            })
+            .expect("connect exiting agent");
+        next_event(&mut events, "connecting").await;
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("agent exit error")
+                .contains("fake agent exited before initialization")
+        );
+        next_event(&mut events, "disconnected").await;
+
+        drop(command_tx);
+        runtime.await.expect("runtime task").expect("runtime exits");
     }
 }

@@ -221,11 +221,18 @@ configuration. Development mode looks for Anvil at
 Validation commands:
 
 ```bash
-cargo test --workspace --locked
 npm test
+npm run coverage
 npm run license:check
 npm run package -- --target <platform>
 ```
+
+`npm test` enforces at least 80% coverage on every TypeScript module and every
+Rust production module. TypeScript uses per-file statement, branch, function,
+and line thresholds; Rust uses production line coverage and excludes inline
+test bodies from the calculation. Install `cargo-llvm-cov` 0.8.7 to run the
+Rust gate locally. HTML TypeScript results are written to
+`coverage/typescript/index.html`.
 
 `cargo-about` version 0.9.1 is required for `npm run license:check`. The tag
 release workflow rejects mismatched versions, validates the complete suite,
