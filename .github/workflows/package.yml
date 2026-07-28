@@ -212,47 +212,12 @@ jobs:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: npx --no-install vsce publish --skip-duplicate --packagePath artifacts/*.vsix
 
-  publish-open-vsx:
-    if: needs.validate.outputs.release == 'true'
-    needs:
-      - validate
-      - package
-      - create-tag
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: brokk-vscode-acp-*
-          path: artifacts
-          merge-multiple: true
-      - name: Verify Open VSX credential
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          if [ -z "$OVSX_PAT" ]; then
-            echo "::error::OVSX_PAT is not configured for this repository"
-            exit 1
-          fi
-      - name: Publish all platform packages to Open VSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: npx --no-install ovsx publish --skip-duplicate artifacts/*.vsix
-
   github-release:
     if: needs.validate.outputs.release == 'true'
     needs:
       - validate
       - create-tag
       - publish-marketplace
-      - publish-open-vsx
     runs-on: ubuntu-latest
     permissions:
       contents: write
