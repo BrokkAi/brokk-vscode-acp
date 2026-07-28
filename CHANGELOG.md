@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add Git worktree-aware sessions with creation, registered-worktree reuse,
+  exact checkout persistence and recovery, and guarded cleanup.
+
 ## 0.3.8 - 2026-07-27
 
 First public release candidate.
