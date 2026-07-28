@@ -2,6 +2,15 @@ name: Release Brokk ACP
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/package.yml
+      - package.json
+      - package-lock.json
+      - Cargo.lock
+      - crates/acp-host/Cargo.toml
+      - CHANGELOG.md
+      - legal/host/THIRD_PARTY_LICENSES.html
   push:
     branches:
       - master
