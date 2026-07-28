@@ -1,11 +1,5 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
-import {
-  MAX_PROMPT_IMAGE_BYTES,
-  MAX_PROMPT_IMAGES,
-  MAX_PROMPT_IMAGE_TOTAL_BYTES,
-  PROMPT_IMAGE_MIME_TYPES,
-} from "./images";
 
 export function webviewHtml(webview: vscode.Webview): string {
   const nonce = randomBytes(18).toString("base64");
@@ -1074,7 +1068,7 @@ export function webviewHtml(webview: vscode.Webview): string {
             <div id="image-previews" class="image-previews hidden" aria-label="Attached images"></div>
             <textarea id="prompt" rows="2" placeholder="Ask the agent…" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
             <div class="composer-footer">
-              <input id="image-input" class="visually-hidden" type="file" accept="${PROMPT_IMAGE_MIME_TYPES.join(",")}" multiple>
+              <input id="image-input" class="visually-hidden" type="file" accept="image/*" multiple>
               <button id="attach-button" class="attach-button" title="Attach images" aria-label="Attach images">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 14.9 6.1a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.2-8.2"/><path d="m6.4 14.6 8.5-8.5"/></svg>
               </button>
@@ -1109,12 +1103,6 @@ export function webviewHtml(webview: vscode.Webview): string {
       'stop-button', 'banner', 'slash-menu', 'image-previews', 'image-input', 'attach-button',
       'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
-    const imageLimits = ${JSON.stringify({
-      count: MAX_PROMPT_IMAGES,
-      bytes: MAX_PROMPT_IMAGE_BYTES,
-      totalBytes: MAX_PROMPT_IMAGE_TOTAL_BYTES,
-      mimeTypes: PROMPT_IMAGE_MIME_TYPES,
-    })};
     let appState = { agents: [], selectedAgent: '', connection: { phase: 'idle' }, sessions: [] };
     let drawerOpen = false;
     let configOpen = false;
@@ -1684,18 +1672,17 @@ export function webviewHtml(webview: vscode.Webview): string {
         card.append(preview, name, remove);
         previews.appendChild(card);
       });
-      if (pendingImages.length > 0 && pendingImages.length < imageLimits.count) {
+      if (pendingImages.length > 0) {
         const add = document.createElement('button');
         add.className = 'image-preview-add';
         add.type = 'button';
-        add.title = 'Attach another image (' + pendingImages.length +
-          ' of ' + imageLimits.count + ' attached)';
+        add.title = 'Attach more images (' + pendingImages.length + ' attached)';
         add.setAttribute('aria-label', add.title);
         const icon = document.createElement('span');
         icon.className = 'image-preview-add-icon';
         icon.textContent = '+';
         const label = document.createElement('span');
-        label.textContent = 'Add · ' + pendingImages.length + '/' + imageLimits.count;
+        label.textContent = 'Add more';
         add.append(icon, label);
         add.onclick = () => elements['image-input'].click();
         previews.appendChild(add);
@@ -1733,24 +1720,10 @@ export function webviewHtml(webview: vscode.Webview): string {
         showAttachmentError('This ACP agent does not support image prompts.');
         return;
       }
-      if (pendingImages.length + files.length > imageLimits.count) {
-        showAttachmentError('Attach at most ' + imageLimits.count + ' images to one prompt.');
-        return;
-      }
-
-      let totalBytes = pendingImages.reduce((sum, image) => sum + image.size, 0);
       for (const file of files) {
         const mimeType = String(file.type || '').toLowerCase();
-        if (!imageLimits.mimeTypes.includes(mimeType)) {
-          showAttachmentError(file.name + ' must be PNG, JPEG, GIF, or WebP.');
-          continue;
-        }
-        if (file.size > imageLimits.bytes) {
-          showAttachmentError(file.name + ' exceeds the 10 MB limit.');
-          continue;
-        }
-        if (totalBytes + file.size > imageLimits.totalBytes) {
-          showAttachmentError('Image attachments exceed the 20 MB total limit.');
+        if (!mimeType.startsWith('image/') || mimeType.length === 'image/'.length) {
+          showAttachmentError(file.name + ' is not identified as an image.');
           continue;
         }
         try {
@@ -1758,10 +1731,8 @@ export function webviewHtml(webview: vscode.Webview): string {
           pendingImages.push({
             data,
             mimeType,
-            name: file.name || 'Image',
-            size: file.size
+            name: file.name || 'Image'
           });
-          totalBytes += file.size;
           attachmentError = undefined;
         } catch (error) {
           showAttachmentError(error instanceof Error ? error.message : String(error));
@@ -1811,8 +1782,8 @@ export function webviewHtml(webview: vscode.Webview): string {
       elements['attach-button'].disabled = !ready || !imagePromptsSupported();
       elements['image-input'].disabled = !ready || !imagePromptsSupported();
       const attachmentTitle = pendingImages.length
-        ? 'Attach more images (' + pendingImages.length + ' of ' + imageLimits.count + ' attached)'
-        : 'Attach images (up to ' + imageLimits.count + ')';
+        ? 'Attach more images (' + pendingImages.length + ' attached)'
+        : 'Attach images';
       elements['attach-button'].title = imagePromptsSupported()
         ? attachmentTitle
         : 'This agent does not advertise image prompt support';

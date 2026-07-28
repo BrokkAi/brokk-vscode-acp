@@ -3,10 +3,6 @@ use anyhow::{Result, anyhow};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 
-pub const MAX_PROMPT_IMAGES: usize = 4;
-pub const MAX_PROMPT_IMAGE_BYTES: usize = 10 * 1024 * 1024;
-pub const MAX_PROMPT_IMAGE_TOTAL_BYTES: usize = 20 * 1024 * 1024;
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptImage {
@@ -19,11 +15,6 @@ pub fn content_blocks(
     images: Vec<PromptImage>,
     image_supported: bool,
 ) -> Result<Vec<ContentBlock>> {
-    if images.len() > MAX_PROMPT_IMAGES {
-        return Err(anyhow!(
-            "attach at most {MAX_PROMPT_IMAGES} images to one prompt"
-        ));
-    }
     if !images.is_empty() && !image_supported {
         return Err(anyhow!(
             "this ACP agent does not advertise image prompt support"
@@ -35,35 +26,17 @@ pub fn content_blocks(
         content.push(ContentBlock::Text(TextContent::new(text)));
     }
 
-    let mut total_bytes = 0;
     for (index, image) in images.into_iter().enumerate() {
         let number = index + 1;
-        if !matches!(
-            image.mime_type.as_str(),
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        ) {
-            return Err(anyhow!("image {number} must be PNG, JPEG, GIF, or WebP"));
+        let mime_type = image.mime_type.trim().to_ascii_lowercase();
+        if !mime_type.starts_with("image/") || mime_type.len() == "image/".len() {
+            return Err(anyhow!("image {number} must have an image MIME type"));
         }
-        let max_encoded_len = 4 * MAX_PROMPT_IMAGE_BYTES.div_ceil(3);
-        if image.data.len() > max_encoded_len {
-            return Err(anyhow!("image {number} exceeds the 10 MB limit"));
-        }
-        let decoded = STANDARD
+        STANDARD
             .decode(&image.data)
             .map_err(|_| anyhow!("image {number} is not valid base64"))?;
-        if decoded.len() > MAX_PROMPT_IMAGE_BYTES {
-            return Err(anyhow!("image {number} exceeds the 10 MB limit"));
-        }
-        if !has_expected_signature(&image.mime_type, &decoded) {
-            return Err(anyhow!("image {number} does not match its declared format"));
-        }
-        total_bytes += decoded.len();
-        if total_bytes > MAX_PROMPT_IMAGE_TOTAL_BYTES {
-            return Err(anyhow!("image attachments exceed the 20 MB total limit"));
-        }
         content.push(ContentBlock::Image(ImageContent::new(
-            image.data,
-            image.mime_type,
+            image.data, mime_type,
         )));
     }
 
@@ -71,18 +44,6 @@ pub fn content_blocks(
         return Err(anyhow!("a prompt needs text or at least one image"));
     }
     Ok(content)
-}
-
-fn has_expected_signature(mime_type: &str, data: &[u8]) -> bool {
-    match mime_type {
-        "image/png" => data.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
-        "image/jpeg" => data.starts_with(&[0xff, 0xd8, 0xff]),
-        "image/gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
-        "image/webp" => {
-            data.starts_with(b"RIFF") && data.get(8..12).is_some_and(|value| value == b"WEBP")
-        }
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -97,12 +58,11 @@ mod tests {
     }
 
     #[test]
-    fn builds_text_and_supported_image_content() {
-        let cases: [(&str, &[u8]); 4] = [
-            ("image/png", &[137, 80, 78, 71, 13, 10, 26, 10]),
-            ("image/jpeg", &[0xff, 0xd8, 0xff]),
-            ("image/gif", b"GIF89a"),
-            ("image/webp", b"RIFFsizeWEBP"),
+    fn builds_text_and_any_image_content() {
+        let cases: [(&str, &[u8]); 3] = [
+            ("image/png", b"not signature inspected"),
+            ("image/heic", b"arbitrary image bytes"),
+            ("image/svg+xml", b"<svg/>"),
         ];
         for (mime_type, bytes) in cases {
             let content = content_blocks("describe".into(), vec![image(mime_type, bytes)], true)
@@ -136,10 +96,10 @@ mod tests {
             .contains("does not advertise")
         );
         assert!(
-            content_blocks("text".into(), vec![image("image/svg+xml", b"<svg>")], true,)
+            content_blocks("text".into(), vec![image("application/pdf", b"%PDF")], true,)
                 .expect_err("mime")
                 .to_string()
-                .contains("must be PNG")
+                .contains("image MIME type")
         );
         assert!(
             content_blocks(
@@ -155,26 +115,19 @@ mod tests {
             .contains("valid base64")
         );
         assert!(
-            content_blocks("text".into(), vec![image("image/png", b"not png")], true,)
-                .expect_err("signature")
-                .to_string()
-                .contains("declared format")
-        );
-        assert!(
             content_blocks(String::new(), Vec::new(), true)
                 .expect_err("empty")
                 .to_string()
                 .contains("needs text")
         );
-        assert!(
-            content_blocks(
-                "text".into(),
-                vec![image("image/gif", b"GIF89a"); MAX_PROMPT_IMAGES + 1],
-                true,
-            )
-            .expect_err("count")
-            .to_string()
-            .contains("at most")
-        );
+    }
+
+    #[test]
+    fn accepts_many_images_without_client_policy() {
+        let images = (0..12)
+            .map(|index| image("image/x-custom", &[index]))
+            .collect();
+        let content = content_blocks("text".into(), images, true).expect("many images");
+        assert_eq!(content.len(), 13);
     }
 }

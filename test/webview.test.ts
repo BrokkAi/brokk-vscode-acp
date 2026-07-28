@@ -377,10 +377,10 @@ describe("webview client", () => {
     ).toEqual(["screen.png", "second.gif"]);
     expect(
       harness.document.querySelector<HTMLButtonElement>(".image-preview-add")?.textContent,
-    ).toBe("+Add · 2/4");
+    ).toBe("+Add more");
     expect(
       harness.document.querySelector<HTMLButtonElement>("#attach-button")?.title,
-    ).toBe("Attach more images (2 of 4 attached)");
+    ).toBe("Attach more images (2 attached)");
 
     prompt.value = "Compare these";
     prompt.dispatchEvent(new harness.window.Event("input"));

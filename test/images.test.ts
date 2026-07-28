@@ -1,16 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-  MAX_PROMPT_IMAGE_BYTES,
-  MAX_PROMPT_IMAGES,
-  normalizePromptImages,
-} from "../src/images";
+import { normalizePromptImages } from "../src/images";
 
 function encoded(bytes: number[]): string {
   return Buffer.from(bytes).toString("base64");
 }
 
 describe("prompt images", () => {
-  it("normalizes supported image formats, safe names, and defaults", () => {
+  it("normalizes image MIME types, safe names, and defaults without a format allowlist", () => {
     expect(normalizePromptImages(undefined)).toEqual([]);
     expect(
       normalizePromptImages([
@@ -29,9 +25,13 @@ describe("prompt images", () => {
           name: "",
         },
         {
-          data: Buffer.from("RIFFsizeWEBP").toString("base64"),
-          mimeType: "image/webp",
-          name: `${"x".repeat(130)}.webp`,
+          data: Buffer.from("not format inspected").toString("base64"),
+          mimeType: "image/heic",
+          name: `${"x".repeat(130)}.heic`,
+        },
+        {
+          data: Buffer.from("<svg/>").toString("base64"),
+          mimeType: "image/svg+xml",
         },
       ]),
     ).toEqual([
@@ -51,22 +51,24 @@ describe("prompt images", () => {
         name: "image-3.gif",
       },
       {
-        data: "UklGRnNpemVXRUJQ",
-        mimeType: "image/webp",
+        data: "bm90IGZvcm1hdCBpbnNwZWN0ZWQ=",
+        mimeType: "image/heic",
         name: "x".repeat(120),
+      },
+      {
+        data: "PHN2Zy8+",
+        mimeType: "image/svg+xml",
+        name: "image-5.svg",
       },
     ]);
   });
 
-  it("rejects invalid collection shapes, formats, encodings, and signatures", () => {
+  it("rejects invalid collection shapes, non-image MIME types, and encodings", () => {
     expect(() => normalizePromptImages({})).toThrow("must be a list");
-    expect(() => normalizePromptImages(Array(MAX_PROMPT_IMAGES + 1).fill({}))).toThrow(
-      "at most",
-    );
     expect(() => normalizePromptImages([null])).toThrow("Image 1 is invalid");
     expect(() =>
-      normalizePromptImages([{ mimeType: "image/svg+xml", data: "PHN2Zz4=" }]),
-    ).toThrow("must be PNG");
+      normalizePromptImages([{ mimeType: "application/pdf", data: "JVBERg==" }]),
+    ).toThrow("image MIME type");
     expect(() =>
       normalizePromptImages([{ mimeType: "image/png" }]),
     ).toThrow("has no encoded data");
@@ -75,37 +77,21 @@ describe("prompt images", () => {
         "valid base64",
       );
     }
-    expect(() =>
-      normalizePromptImages([
-        {
-          mimeType: "image/png",
-          data: Buffer.from("not a png").toString("base64"),
-        },
-      ]),
-    ).toThrow("declared format");
   });
 
-  it("enforces per-image and aggregate byte limits", () => {
-    const oversized = Buffer.alloc(MAX_PROMPT_IMAGE_BYTES + 1);
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(oversized);
-    expect(() =>
-      normalizePromptImages([
-        {
-          mimeType: "image/png",
-          data: oversized.toString("base64"),
-          name: "large.png",
-        },
-      ]),
-    ).toThrow("10 MB");
+  it("does not impose attachment count or byte limits", () => {
+    const formerlyOversized = Buffer.alloc(20 * 1024 * 1024 + 1, 7).toString("base64");
+    const images = Array.from({ length: 12 }, (_, index) => ({
+      mimeType: index === 0 ? "image/heic" : "image/x-custom",
+      data: index === 0 ? formerlyOversized : encoded([index]),
+    }));
 
-    const full = Buffer.alloc(MAX_PROMPT_IMAGE_BYTES);
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(full);
-    expect(() =>
-      normalizePromptImages([
-        { mimeType: "image/png", data: full.toString("base64") },
-        { mimeType: "image/png", data: full.toString("base64") },
-        { mimeType: "image/png", data: "iVBORw0KGgo=" },
-      ]),
-    ).toThrow("20 MB");
+    const normalized = normalizePromptImages(images);
+    expect(normalized).toHaveLength(12);
+    expect(normalized[0]).toMatchObject({
+      data: formerlyOversized,
+      mimeType: "image/heic",
+      name: "image-1.heic",
+    });
   });
 });

@@ -59,11 +59,12 @@ Markdown, and the prompt composer together in the VS Code sidebar.
 - Typing `/` opens autocomplete for the session's live ACP
   `available_commands_update` list, including descriptions and input hints.
   Use Up/Down to navigate, Enter or Tab to insert, and Escape to close.
-- Attach, paste, or drag and drop PNG, JPEG, GIF, and WebP images when the
-  connected agent advertises the standard ACP image prompt capability.
-  Add up to four images in one prompt by selecting or dropping several at once,
-  or by using the visible add-another control beside the previews. Attachments
-  are previewed before sending and remain identified in the transcript.
+- Attach, paste, or drag and drop images when the connected agent advertises
+  the standard ACP image prompt capability. Select or drop several at once, or
+  use the visible add-another control beside the previews. Brokk ACP forwards
+  the attachments without imposing its own format, count, or byte limits.
+  Attachments are previewed before sending and remain identified in the
+  transcript.
 
 ### ACP client surface
 
@@ -184,8 +185,8 @@ ACP agents are coding agents and may request file edits or commands. Brokk ACP:
 - resolves existing paths and write ancestors before allowing access;
 - runs client-owned terminal commands inside that workspace folder;
 - caps retained terminal output;
-- validates image formats and enforces per-image, per-prompt, and attachment
-  count limits before forwarding image content;
+- validates that image payloads carry an image MIME type and valid base64
+  before forwarding them without additional client policy;
 - stores environment-authentication secrets in VS Code Secret Storage; and
 - verifies registry checksums before installing binary distributions.
 
