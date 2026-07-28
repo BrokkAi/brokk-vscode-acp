@@ -8,7 +8,7 @@ export function webviewHtml(webview: vscode.Webview): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src ${webview.cspSource} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
   <style nonce="${nonce}">
     :root {
       color-scheme: light dark;
@@ -19,6 +19,17 @@ export function webviewHtml(webview: vscode.Webview): string {
       --accent-soft: color-mix(in srgb, var(--vscode-focusBorder) 13%, transparent);
     }
     * { box-sizing: border-box; }
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
     html, body { width: 100%; height: 100%; }
     body {
       margin: 0;
@@ -372,6 +383,30 @@ export function webviewHtml(webview: vscode.Webview): string {
       background: var(--vscode-input-background);
       white-space: pre-wrap;
     }
+    .user-attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-bottom: 6px;
+    }
+    .user-attachments:last-child { margin-bottom: 0; }
+    .user-attachment {
+      max-width: 100%;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 6px;
+      border: 1px solid var(--muted-border);
+      border-radius: 5px;
+      color: var(--vscode-descriptionForeground);
+      background: var(--surface);
+      font-size: 10.5px;
+    }
+    .user-attachment span:last-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .assistant-body { font-size: 13px; }
     .assistant-body p { margin: 0 0 10px; }
     .assistant-body p:last-child { margin-bottom: 0; }
@@ -673,6 +708,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       color: color-mix(in srgb, currentColor 72%, transparent);
     }
     .composer {
+      position: relative;
       width: 100%;
       max-width: 720px;
       margin: 0 auto;
@@ -682,6 +718,109 @@ export function webviewHtml(webview: vscode.Webview): string {
       background: var(--vscode-input-background);
     }
     .composer:focus-within { border-color: var(--vscode-focusBorder); }
+    .composer.drag-active {
+      border-color: var(--vscode-focusBorder);
+      box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+    }
+    .drop-overlay {
+      position: absolute;
+      z-index: 5;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      border-radius: 6px;
+      color: var(--vscode-foreground);
+      background: color-mix(
+        in srgb,
+        var(--vscode-editor-background) 88%,
+        var(--vscode-focusBorder)
+      );
+      font-size: 12px;
+      font-weight: 650;
+      letter-spacing: .1px;
+    }
+    .drop-overlay-content {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .drop-overlay-icon {
+      font-size: 17px;
+      line-height: 1;
+    }
+    .image-previews {
+      display: flex;
+      gap: 7px;
+      padding: 8px 9px 1px;
+      overflow-x: auto;
+    }
+    .image-preview {
+      position: relative;
+      width: 62px;
+      flex: 0 0 62px;
+    }
+    .image-preview img {
+      width: 62px;
+      height: 48px;
+      display: block;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+    }
+    .image-preview-name {
+      display: block;
+      margin-top: 2px;
+      overflow: hidden;
+      color: var(--vscode-descriptionForeground);
+      font-size: 9px;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .image-preview-remove {
+      position: absolute;
+      top: -5px;
+      right: -5px;
+      width: 18px;
+      height: 18px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      color: var(--vscode-foreground);
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      font-size: 12px;
+      line-height: 1;
+    }
+    .image-preview-add {
+      width: 62px;
+      height: 48px;
+      display: grid;
+      place-content: center;
+      flex: 0 0 62px;
+      gap: 1px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      font-size: 9px;
+      line-height: 1.15;
+    }
+    .image-preview-add:hover {
+      border-color: var(--vscode-focusBorder);
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
+    }
+    .image-preview-add-icon {
+      font-size: 18px;
+      line-height: 1;
+    }
     textarea {
       width: 100%;
       min-height: 52px;
@@ -711,6 +850,30 @@ export function webviewHtml(webview: vscode.Webview): string {
       font-size: 9.5px;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .composer-hint.error { color: var(--vscode-errorForeground); }
+    .attach-button {
+      width: 27px;
+      height: 27px;
+      display: grid;
+      place-items: center;
+      flex: none;
+      border-radius: 5px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+    }
+    .attach-button:hover:not(:disabled) {
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
+    }
+    .attach-button svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      stroke-width: 1.7;
     }
     .send-button {
       width: 27px;
@@ -895,9 +1058,20 @@ export function webviewHtml(webview: vscode.Webview): string {
         <div id="transcript" class="transcript"><div id="transcript-inner" class="transcript-inner"></div></div>
         <div class="composer-wrap">
           <div id="slash-menu" class="slash-menu hidden" role="listbox" aria-label="Available agent commands"></div>
-          <div class="composer">
+          <div id="composer" class="composer">
+            <div id="drop-overlay" class="drop-overlay hidden" aria-hidden="true">
+              <div class="drop-overlay-content">
+                <span class="drop-overlay-icon" aria-hidden="true">▧</span>
+                <span>Drop images to attach</span>
+              </div>
+            </div>
+            <div id="image-previews" class="image-previews hidden" aria-label="Attached images"></div>
             <textarea id="prompt" rows="2" placeholder="Ask the agent…" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
             <div class="composer-footer">
+              <input id="image-input" class="visually-hidden" type="file" accept="image/*" multiple>
+              <button id="attach-button" class="attach-button" title="Attach images" aria-label="Attach images">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 14.9 6.1a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.2-8.2"/><path d="m6.4 14.6 8.5-8.5"/></svg>
+              </button>
               <span id="composer-hint" class="composer-hint">⌘↵ to send</span>
               <button id="send-button" class="send-button" title="Send" aria-label="Send">↑</button>
               <button id="stop-button" class="stop-button hidden" title="Stop" aria-label="Stop">■</button>
@@ -925,8 +1099,9 @@ export function webviewHtml(webview: vscode.Webview): string {
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
       'install-row', 'start-button', 'browse-button', 'session-toolbar', 'config-summary',
       'config-button', 'config-panel', 'config-editor', 'plan-dock', 'transcript',
-      'transcript-inner', 'prompt', 'composer-hint', 'send-button', 'stop-button', 'banner',
-      'slash-menu', 'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
+      'transcript-inner', 'composer', 'drop-overlay', 'prompt', 'composer-hint', 'send-button',
+      'stop-button', 'banner', 'slash-menu', 'image-previews', 'image-input', 'attach-button',
+      'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
     let appState = { agents: [], selectedAgent: '', connection: { phase: 'idle' }, sessions: [] };
     let drawerOpen = false;
@@ -936,6 +1111,10 @@ export function webviewHtml(webview: vscode.Webview): string {
     let slashMatches = [];
     let slashSelected = 0;
     let slashDismissedValue;
+    let pendingImages = [];
+    let attachmentError;
+    let attachmentSessionId;
+    let imageDragDepth = 0;
     const expandedEntries = new Set();
     const collapsedPlans = new Set();
 
@@ -1310,7 +1489,31 @@ export function webviewHtml(webview: vscode.Webview): string {
       if (entry.kind === 'user') {
         const bubble = document.createElement('div');
         bubble.className = 'user-bubble';
-        bubble.textContent = entry.text || '';
+        const attachments = Array.isArray(entry.attachments)
+          ? entry.attachments.filter(item => item?.type === 'image')
+          : [];
+        if (attachments.length) {
+          const list = document.createElement('div');
+          list.className = 'user-attachments';
+          for (const attachment of attachments) {
+            const item = document.createElement('span');
+            item.className = 'user-attachment';
+            const icon = document.createElement('span');
+            icon.setAttribute('aria-hidden', 'true');
+            icon.textContent = '▧';
+            const name = document.createElement('span');
+            name.textContent = attachment.name || 'Image';
+            item.title = attachment.mimeType || 'Image attachment';
+            item.append(icon, name);
+            list.appendChild(item);
+          }
+          bubble.appendChild(list);
+        }
+        if (entry.text) {
+          const text = document.createElement('div');
+          text.textContent = entry.text;
+          bubble.appendChild(text);
+        }
         wrapper.appendChild(bubble);
         return wrapper;
       }
@@ -1433,19 +1636,166 @@ export function webviewHtml(webview: vscode.Webview): string {
       return card;
     }
 
+    function imagePromptsSupported() {
+      return appState.connection?.canPromptImages === true;
+    }
+
+    function canSubmitPrompt(active) {
+      return active?.status === 'ready' &&
+        (Boolean(elements.prompt.value.trim()) || pendingImages.length > 0);
+    }
+
+    function renderImagePreviews() {
+      const previews = elements['image-previews'];
+      previews.replaceChildren();
+      previews.classList.toggle('hidden', pendingImages.length === 0);
+      pendingImages.forEach((image, index) => {
+        const card = document.createElement('div');
+        card.className = 'image-preview';
+        const preview = document.createElement('img');
+        preview.src = 'data:' + image.mimeType + ';base64,' + image.data;
+        preview.alt = image.name;
+        const name = document.createElement('span');
+        name.className = 'image-preview-name';
+        name.textContent = image.name;
+        const remove = document.createElement('button');
+        remove.className = 'image-preview-remove';
+        remove.type = 'button';
+        remove.title = 'Remove ' + image.name;
+        remove.setAttribute('aria-label', 'Remove ' + image.name);
+        remove.textContent = '×';
+        remove.onclick = () => {
+          pendingImages.splice(index, 1);
+          attachmentError = undefined;
+          renderComposer(appState.active);
+        };
+        card.append(preview, name, remove);
+        previews.appendChild(card);
+      });
+      if (pendingImages.length > 0) {
+        const add = document.createElement('button');
+        add.className = 'image-preview-add';
+        add.type = 'button';
+        add.title = 'Attach more images (' + pendingImages.length + ' attached)';
+        add.setAttribute('aria-label', add.title);
+        const icon = document.createElement('span');
+        icon.className = 'image-preview-add-icon';
+        icon.textContent = '+';
+        const label = document.createElement('span');
+        label.textContent = 'Add more';
+        add.append(icon, label);
+        add.onclick = () => elements['image-input'].click();
+        previews.appendChild(add);
+      }
+    }
+
+    function showAttachmentError(message) {
+      attachmentError = message;
+      renderComposer(appState.active);
+    }
+
+    function readImage(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Could not read ' + file.name + '.'));
+        reader.onload = () => {
+          if (typeof reader.result !== 'string' || !reader.result.includes(',')) {
+            reject(new Error('Could not read ' + file.name + '.'));
+            return;
+          }
+          resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function addImageFiles(values) {
+      const files = Array.from(values || []);
+      if (!files.length) return;
+      if (appState.active?.status !== 'ready') {
+        showAttachmentError('Wait for the session to be ready before attaching an image.');
+        return;
+      }
+      if (!imagePromptsSupported()) {
+        showAttachmentError('This ACP agent does not support image prompts.');
+        return;
+      }
+      for (const file of files) {
+        const mimeType = String(file.type || '').toLowerCase();
+        if (!mimeType.startsWith('image/') || mimeType.length === 'image/'.length) {
+          showAttachmentError(file.name + ' is not identified as an image.');
+          continue;
+        }
+        try {
+          const data = await readImage(file);
+          pendingImages.push({
+            data,
+            mimeType,
+            name: file.name || 'Image'
+          });
+          attachmentError = undefined;
+        } catch (error) {
+          showAttachmentError(error instanceof Error ? error.message : String(error));
+        }
+      }
+      renderComposer(appState.active);
+    }
+
+    function dragHasFiles(event) {
+      const transfer = event.dataTransfer;
+      if (!transfer) return false;
+      return Array.from(transfer.types || []).includes('Files') ||
+        Boolean(transfer.files?.length);
+    }
+
+    function setImageDragActive(active) {
+      const enabled = Boolean(
+        active &&
+        appState.active?.status === 'ready' &&
+        imagePromptsSupported()
+      );
+      elements.composer.classList.toggle('drag-active', enabled);
+      elements['drop-overlay'].classList.toggle('hidden', !enabled);
+    }
+
+    function resetImageDrag() {
+      imageDragDepth = 0;
+      setImageDragActive(false);
+    }
+
     function renderComposer(active) {
+      if (attachmentSessionId !== active.localId) {
+        attachmentSessionId = active.localId;
+        pendingImages = [];
+        attachmentError = undefined;
+      }
+      if (!imagePromptsSupported() && pendingImages.length) {
+        pendingImages = [];
+      }
       const running = active.status === 'running';
       const ready = active.status === 'ready';
+      if (!ready || !imagePromptsSupported()) resetImageDrag();
       elements.prompt.disabled = false;
       elements['send-button'].classList.toggle('hidden', running);
       elements['stop-button'].classList.toggle('hidden', !running);
-      elements['send-button'].disabled = !ready || !elements.prompt.value.trim();
+      elements['send-button'].disabled = !canSubmitPrompt(active);
+      elements['attach-button'].disabled = !ready || !imagePromptsSupported();
+      elements['image-input'].disabled = !ready || !imagePromptsSupported();
+      const attachmentTitle = pendingImages.length
+        ? 'Attach more images (' + pendingImages.length + ' attached)'
+        : 'Attach images';
+      elements['attach-button'].title = imagePromptsSupported()
+        ? attachmentTitle
+        : 'This agent does not advertise image prompt support';
+      elements['attach-button'].setAttribute('aria-label', elements['attach-button'].title);
+      elements['composer-hint'].classList.toggle('error', Boolean(attachmentError));
       elements['composer-hint'].textContent = defaultComposerHint(active);
+      renderImagePreviews();
       updateSlashMenu(active);
     }
 
     function defaultComposerHint(active) {
-      return usageLabel(active?.usage) ||
+      return attachmentError || usageLabel(active?.usage) ||
         (active?.status === 'running' ? 'Agent is working…' : '⌘↵ to send');
     }
 
@@ -1604,13 +1954,21 @@ export function webviewHtml(webview: vscode.Webview): string {
 
     function submitPrompt() {
       const text = elements.prompt.value.trim();
-      if (!text || appState.active?.status !== 'ready') return;
-      post('prompt', { text });
+      const images = pendingImages.map(image => ({
+        data: image.data,
+        mimeType: image.mimeType,
+        name: image.name
+      }));
+      if ((!text && !images.length) || appState.active?.status !== 'ready') return;
+      post('prompt', images.length ? { text, images } : { text });
       elements.prompt.value = '';
+      pendingImages = [];
+      attachmentError = undefined;
       slashDismissedValue = undefined;
       slashMatches = [];
       autosizePrompt();
       elements['send-button'].disabled = true;
+      renderImagePreviews();
       drawSlashMenu();
     }
 
@@ -1831,13 +2189,56 @@ export function webviewHtml(webview: vscode.Webview): string {
     };
     elements['send-button'].onclick = submitPrompt;
     elements['stop-button'].onclick = () => post('cancel');
+    elements.composer.ondragenter = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      imageDragDepth += 1;
+      setImageDragActive(true);
+    };
+    elements.composer.ondragover = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect =
+          appState.active?.status === 'ready' && imagePromptsSupported()
+            ? 'copy'
+            : 'none';
+      }
+      setImageDragActive(true);
+    };
+    elements.composer.ondragleave = event => {
+      if (!dragHasFiles(event)) return;
+      imageDragDepth = Math.max(0, imageDragDepth - 1);
+      if (imageDragDepth === 0) setImageDragActive(false);
+    };
+    elements.composer.ondrop = event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer?.files || []);
+      resetImageDrag();
+      void addImageFiles(files);
+    };
+    elements.composer.ondragend = resetImageDrag;
+    elements['attach-button'].onclick = () => elements['image-input'].click();
+    elements['image-input'].onchange = () => {
+      void addImageFiles(elements['image-input'].files);
+      elements['image-input'].value = '';
+    };
     elements.prompt.oninput = () => {
       if (slashDismissedValue !== elements.prompt.value) {
         slashDismissedValue = undefined;
       }
+      attachmentError = undefined;
       autosizePrompt();
-      elements['send-button'].disabled = appState.active?.status !== 'ready' || !elements.prompt.value.trim();
+      elements['send-button'].disabled = !canSubmitPrompt(appState.active);
       updateSlashMenu(appState.active);
+    };
+    elements.prompt.onpaste = event => {
+      const files = Array.from(event.clipboardData?.files || [])
+        .filter(file => String(file.type || '').startsWith('image/'));
+      if (!files.length) return;
+      event.preventDefault();
+      void addImageFiles(files);
     };
     elements.prompt.onkeydown = event => {
       if (slashMatches.length) {
@@ -1886,6 +2287,15 @@ export function webviewHtml(webview: vscode.Webview): string {
       event.preventDefault();
       setConfigOpen(false);
       elements['config-button'].focus();
+    });
+
+    window.addEventListener('dragover', event => {
+      if (dragHasFiles(event)) event.preventDefault();
+    });
+    window.addEventListener('drop', event => {
+      if (!dragHasFiles(event)) return;
+      event.preventDefault();
+      if (!elements.composer.contains(event.target)) resetImageDrag();
     });
 
     window.addEventListener('message', ({ data }) => {

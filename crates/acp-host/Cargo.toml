@@ -8,6 +8,7 @@ description = "Rust ACP runtime for the Brokk VS Code extension"
 [dependencies]
 agent-client-protocol = { version = "1", features = ["unstable"] }
 anyhow = "1"
+base64 = "0.22"
 bzip2 = "0.6"
 flate2 = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

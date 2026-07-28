@@ -188,6 +188,11 @@ describe("SessionStore persistence and lifecycle", () => {
       status: "end_turn",
     });
     expect(active.entries.find((entry) => entry.kind === "thought")?.text).toBe("[README.md]");
+    expect(
+      active.entries.find(
+        (entry) => entry.kind === "user" && entry.attachments?.length,
+      )?.attachments,
+    ).toEqual([{ type: "image", name: "Image", mimeType: "image" }]);
     expect(active.entries.find((entry) => entry.toolCallId === "tool-1")).toMatchObject({
       title: "Read file",
       status: "completed",
@@ -234,6 +239,26 @@ describe("SessionStore persistence and lifecycle", () => {
       content: { type: "text", text: "Replay prompt" },
     });
     store.applySessionUpdate({
+      sessionUpdate: "user_message_chunk",
+      content: {
+        type: "image",
+        mimeType: "image/png",
+        uri: "file:///tmp/Replay%20image.png",
+      },
+    });
+    store.applySessionUpdate({
+      sessionUpdate: "user_message_chunk",
+      content: {
+        type: "image",
+        mimeType: "image/jpeg",
+        uri: "file:///tmp/%E0%A4%A",
+      },
+    });
+    expect(store.active?.entries[0]?.attachments).toEqual([
+      { type: "image", name: "Replay image.png", mimeType: "image/png" },
+      { type: "image", name: "%E0%A4%A", mimeType: "image/jpeg" },
+    ]);
+    store.applySessionUpdate({
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "Replay response" },
     });
@@ -246,6 +271,25 @@ describe("SessionStore persistence and lifecycle", () => {
     store.setSessionStarted("remote-1", "load", [], undefined);
     store.disconnected();
     expect(store.active?.entries).toEqual([]);
+  });
+
+  it("records image-only prompts without persisting encoded image data", () => {
+    const { context } = contextWith();
+    const store = new SessionStore(context);
+    store.create({ id: "agent", name: "Agent" }, "/workspace");
+    store.beginTurn("", [
+      { type: "image", name: "screen.png", mimeType: "image/png" },
+    ]);
+
+    expect(store.active?.title).toBe("Image: screen.png");
+    expect(store.active?.entries.at(-1)).toMatchObject({
+      kind: "user",
+      text: undefined,
+      attachments: [
+        { type: "image", name: "screen.png", mimeType: "image/png" },
+      ],
+    });
+    expect(JSON.stringify(store.active)).not.toContain("base64");
   });
 
   it("merges, updates, sorts, and removes remote sessions", () => {

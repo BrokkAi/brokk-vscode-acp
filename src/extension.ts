@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import * as vscode from "vscode";
+import { normalizePromptImages } from "./images";
 import { SessionRecord, SessionStore } from "./sessionStore";
 import { webviewHtml } from "./webview";
 
@@ -657,11 +658,29 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           }
           break;
         case "prompt":
-          if (typeof message.text === "string" && message.text.trim()) {
-            const text = message.text.trim();
-            this.sessions.beginTurn(text);
+          {
+            const text = typeof message.text === "string" ? message.text.trim() : "";
+            const images = normalizePromptImages(message.images);
+            if (!text && images.length === 0) {
+              break;
+            }
+            if (images.length > 0 && !this.imagePromptsSupported()) {
+              throw new Error("This ACP agent does not support image prompts.");
+            }
+            this.sessions.beginTurn(
+              text,
+              images.map((image) => ({
+                type: "image",
+                name: image.name,
+                mimeType: image.mimeType,
+              })),
+            );
             this.postState();
-            this.host.send({ type: "prompt", text });
+            this.host.send({
+              type: "prompt",
+              text,
+              ...(images.length ? { images } : {}),
+            });
           }
           break;
         case "cancel":
@@ -841,6 +860,13 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     return agent;
   }
 
+  private imagePromptsSupported(): boolean {
+    const promptCapabilities = isRecord(this.capabilities?.promptCapabilities)
+      ? this.capabilities.promptCapabilities
+      : undefined;
+    return promptCapabilities?.image === true;
+  }
+
   private postState(): void {
     const sessionState = this.sessions.snapshot();
     const sessionCapabilities = isRecord(this.capabilities?.sessionCapabilities)
@@ -859,6 +885,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           detail: this.connectionDetail,
           canList: sessionCapabilities?.list !== undefined,
           canDelete: sessionCapabilities?.delete !== undefined,
+          canPromptImages: this.imagePromptsSupported(),
         },
         auth: this.auth,
         banner: this.banner,

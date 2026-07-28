@@ -1,4 +1,5 @@
 mod client_io;
+mod prompt;
 mod registry;
 
 use std::collections::HashMap;
@@ -11,17 +12,18 @@ use std::time::Duration;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AuthCapabilities, AuthMethod, AuthenticateRequest, CancelNotification,
-    ClientCapabilities, ContentBlock, CreateTerminalRequest, DeleteSessionRequest,
-    FileSystemCapabilities, Implementation, InitializeRequest, KillTerminalRequest,
-    ListSessionsRequest, LoadSessionRequest, NewSessionRequest, PromptRequest, ReadTextFileRequest,
+    ClientCapabilities, CreateTerminalRequest, DeleteSessionRequest, FileSystemCapabilities,
+    Implementation, InitializeRequest, KillTerminalRequest, ListSessionsRequest,
+    LoadSessionRequest, NewSessionRequest, PromptRequest, ReadTextFileRequest,
     ReleaseTerminalRequest, RequestPermissionRequest, ResumeSessionRequest,
     SessionConfigOptionValue, SessionId, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, TerminalOutputRequest, TextContent, WaitForTerminalExitRequest,
+    SetSessionConfigOptionRequest, TerminalOutputRequest, WaitForTerminalExitRequest,
     WriteTextFileRequest,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectTo, ConnectionTo};
 use anyhow::{Context, Result, anyhow};
 use client_io::{PermissionBroker, WorkspaceIo};
+use prompt::{PromptImage, content_blocks};
 use registry::{DEFAULT_REGISTRY_URL, LaunchSpec};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -72,6 +74,8 @@ enum HostCommand {
     },
     Prompt {
         text: String,
+        #[serde(default)]
+        images: Vec<PromptImage>,
     },
     Cancel,
     Authenticate {
@@ -701,7 +705,7 @@ async fn drive_session(
                 delete_session(&connection, &session_id, &agent_capabilities).await?;
                 report_session_list(&connection, &cwd, &agent_capabilities).await?;
             }
-            HostCommand::Prompt { text } => {
+            HostCommand::Prompt { text, images } => {
                 let Some(session) = active_session.as_ref() else {
                     emit(&json!({
                         "type": "error",
@@ -710,13 +714,27 @@ async fn drive_session(
                     .await?;
                     continue;
                 };
+                let prompt = match content_blocks(
+                    text,
+                    images,
+                    agent_capabilities.prompt_capabilities.image,
+                ) {
+                    Ok(prompt) => prompt,
+                    Err(error) => {
+                        emit(&json!({
+                            "type": "error",
+                            "message": format!("invalid prompt: {error}")
+                        }))
+                        .await?;
+                        continue;
+                    }
+                };
                 let session_id = session.id.clone();
                 emit(&json!({
                     "type": "turn_started",
                     "session_id": session_id,
                 }))
                 .await?;
-                let prompt = vec![ContentBlock::Text(TextContent::new(text))];
                 let request = PromptRequest::new(session_id.clone(), prompt);
                 let mut task = Box::pin(connection.send_request(request).block_task());
                 loop {
@@ -1278,7 +1296,22 @@ mod tests {
                 "type": "prompt",
                 "text": "hello"
             })),
-            Ok(HostCommand::Prompt { text }) if text == "hello"
+            Ok(HostCommand::Prompt { text, images }) if text == "hello" && images.is_empty()
+        ));
+        assert!(matches!(
+            serde_json::from_value::<HostCommand>(json!({
+                "type": "prompt",
+                "text": "describe",
+                "images": [{
+                    "data": "R0lGODlh",
+                    "mimeType": "image/gif",
+                    "name": "ignored.gif"
+                }]
+            })),
+            Ok(HostCommand::Prompt { text, images })
+                if text == "describe"
+                    && images.len() == 1
+                    && images[0].mime_type == "image/gif"
         ));
         assert!(matches!(
             serde_json::from_value::<HostCommand>(json!({ "type": "cancel" })),
@@ -1405,6 +1438,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "before connect".into(),
+                images: Vec::new(),
             })
             .expect("send command");
         assert_eq!(
@@ -1453,6 +1487,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "build it".into(),
+                images: Vec::new(),
             })
             .expect("prompt");
         next_event(&mut events, "turn_started").await;
@@ -1460,6 +1495,21 @@ mod tests {
         assert_eq!(
             next_event(&mut events, "turn_completed").await["stop_reason"],
             "end_turn"
+        );
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "describe it".into(),
+                images: vec![PromptImage {
+                    data: "iVBORw0KGgo=".into(),
+                    mime_type: "image/png".into(),
+                }],
+            })
+            .expect("unsupported image prompt");
+        assert!(
+            next_event(&mut events, "error").await["message"]
+                .as_str()
+                .expect("image capability error")
+                .contains("does not advertise image prompt support")
         );
 
         command_tx
@@ -1498,6 +1548,67 @@ mod tests {
             next_event(&mut events, "disconnected").await["reason"],
             "requested"
         );
+
+        let launch = fake_launch("image");
+        command_tx
+            .send(HostCommand::Connect {
+                command: launch.command,
+                args: launch.args,
+                cwd: workspace.path().to_owned(),
+                env: launch.env,
+                session: SessionSelection::New,
+            })
+            .expect("connect image agent");
+        next_event(&mut events, "connecting").await;
+        next_event(&mut events, "connection_progress").await;
+        let connected = next_event(&mut events, "connected").await;
+        assert_eq!(
+            connected["agent_capabilities"]["promptCapabilities"]["image"],
+            true
+        );
+        next_event(&mut events, "session_started").await;
+        command_tx
+            .send(HostCommand::Prompt {
+                text: "describe it".into(),
+                images: vec![
+                    PromptImage {
+                        data: "iVBORw0KGgo=".into(),
+                        mime_type: "image/png".into(),
+                    },
+                    PromptImage {
+                        data: "R0lGODlh".into(),
+                        mime_type: "image/gif".into(),
+                    },
+                ],
+            })
+            .expect("image prompt");
+        next_event(&mut events, "turn_started").await;
+        next_event(&mut events, "turn_completed").await;
+        let image_prompt: Value = serde_json::from_str(
+            &fs::read_to_string(workspace.path().join("image-prompt.json"))
+                .expect("captured image prompt"),
+        )
+        .expect("image prompt JSON");
+        assert_eq!(
+            image_prompt,
+            json!([
+                {"type": "text", "text": "describe it"},
+                {
+                    "type": "image",
+                    "data": "iVBORw0KGgo=",
+                    "mimeType": "image/png"
+                },
+                {
+                    "type": "image",
+                    "data": "R0lGODlh",
+                    "mimeType": "image/gif"
+                }
+            ])
+        );
+        command_tx
+            .send(HostCommand::Disconnect)
+            .expect("disconnect image agent");
+        next_event(&mut events, "disconnected").await;
 
         let launch = fake_launch("resume");
         command_tx
@@ -1568,6 +1679,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "request permission".into(),
+                images: Vec::new(),
             })
             .expect("permission prompt");
         next_event(&mut events, "turn_started").await;
@@ -1597,6 +1709,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "approve permission".into(),
+                images: Vec::new(),
             })
             .expect("approved permission prompt");
         next_event(&mut events, "turn_started").await;
@@ -1615,6 +1728,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "cancel then finish".into(),
+                images: Vec::new(),
             })
             .expect("cancelled permission prompt");
         next_event(&mut events, "turn_started").await;
@@ -1674,6 +1788,7 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "without a session".into(),
+                images: Vec::new(),
             })
             .expect("prompt without session");
         next_event(&mut events, "error").await;

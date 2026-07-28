@@ -131,6 +131,7 @@ for line in sys.stdin:
         else:
             capabilities = {
                 "loadSession": MODE != "resume",
+                "promptCapabilities": {"image": MODE == "image"},
                 "sessionCapabilities": {"list": {}, "delete": {}, "resume": {}},
             }
         result(
@@ -174,7 +175,15 @@ for line in sys.stdin:
     elif method in ("session/load", "session/resume"):
         result(request_id, {})
     elif method == "session/prompt":
-        if MODE == "clientio":
+        if MODE == "image":
+            with open(
+                os.path.join(os.getcwd(), "image-prompt.json"),
+                "w",
+                encoding="utf-8",
+            ) as prompt_file:
+                json.dump(params.get("prompt"), prompt_file)
+            result(request_id, {"stopReason": "end_turn"})
+        elif MODE == "clientio":
             pending_prompt = request_id
             request(
                 200,
