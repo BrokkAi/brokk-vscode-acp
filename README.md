@@ -244,10 +244,17 @@ test bodies from the calculation. Install `cargo-llvm-cov` 0.8.7 to run the
 Rust gate locally. HTML TypeScript results are written to
 `coverage/typescript/index.html`.
 
-`cargo-about` version 0.9.1 is required for `npm run license:check`. The tag
-release workflow rejects mismatched versions, validates the complete suite,
-builds all five supported platform VSIX files, publishes them as one
-platform-specific Marketplace version, and attaches them to a GitHub release.
+`cargo-about` version 0.9.1 is required for `npm run license:check`.
+
+Merging a synchronized version bump to `master` starts the release workflow.
+It validates the complete suite, builds all five supported platform VSIX
+files, creates the annotated `v<version>` tag, publishes the platform packages
+to the Visual Studio Marketplace, and creates a GitHub release with every VSIX
+attached. A matching tag can also start a release, and a manual workflow run
+builds the packages without publishing them.
+
+Repository administrators must configure `VSCE_PAT` for the Visual Studio
+Marketplace as a GitHub Actions secret.
 
 ## Corresponding source
 
