@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     showErrorMessage: vi.fn(async () => undefined),
     showWarningMessage: vi.fn(async () => undefined),
     showInputBox: vi.fn(async () => undefined),
+    showOpenDialog: vi.fn(async () => undefined),
     showQuickPick: vi.fn(async () => undefined),
     onDidChangeWindowState: vi.fn(() => ({ dispose: vi.fn() })),
     executeCommand: vi.fn(async () => undefined),
@@ -66,6 +67,7 @@ vi.mock("vscode", () => {
       showErrorMessage: mocks.showErrorMessage,
       showWarningMessage: mocks.showWarningMessage,
       showInputBox: mocks.showInputBox,
+      showOpenDialog: mocks.showOpenDialog,
       showQuickPick: mocks.showQuickPick,
       onDidChangeWindowState: mocks.onDidChangeWindowState,
       registerWebviewViewProvider: mocks.registerWebviewViewProvider,
@@ -106,6 +108,7 @@ import {
   resolveAnvilExecutable,
   RustHost,
   workspacePath,
+  workspacePathOrUndefined,
   type AgentChoice,
   type HostSessionSelection,
   type LaunchSpec,
@@ -382,10 +385,12 @@ describe("extension validation helpers", () => {
     mocks.config.set("registry.url", "https://registry.test/index.json");
     mocks.config.set("anvil.path", " /custom/anvil ");
     expect(workspacePath()).toBe("/workspace");
+    expect(workspacePathOrUndefined()).toBe("/workspace");
     expect(registryUrl()).toBe("https://registry.test/index.json");
     expect(resolveAnvilExecutable(extensionContext())).toBe("/custom/anvil");
 
     (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
+    expect(workspacePathOrUndefined()).toBeUndefined();
     expect(() => workspacePath()).toThrow("Open a workspace");
   });
 
@@ -472,6 +477,26 @@ describe("AgentCatalog", () => {
 });
 
 describe("RustHost", () => {
+  it("starts catalog discovery from the extension directory without a workspace", async () => {
+    (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
+    const context = extensionContext();
+    const child = fakeChild();
+    mocks.spawn.mockReturnValue(child);
+    mocks.createInterface.mockReturnValue(new NodeEventEmitter());
+    const host = new RustHost(context);
+
+    await host.listAgents();
+
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      expect.any(String),
+      [],
+      { cwd: context.extensionPath, stdio: "pipe" },
+    );
+    host.dispose();
+    child.emit("exit", 0, null);
+    await vi.runAllTimersAsync();
+  });
+
   it("starts once, writes commands, logs events, reconnects, and disposes", async () => {
     const context = extensionContext();
     const child = fakeChild();
@@ -614,6 +639,45 @@ describe("RustHost", () => {
 });
 
 describe("ChatView", () => {
+  it("keeps the agent catalog usable and opens a folder when no workspace is open", async () => {
+    (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      new FakeWorktrees(),
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+
+    await resolved.receive({ type: "ready" });
+    const state = (resolved.posted.at(-1) as {
+      state: { agents: AgentChoice[]; workspace?: unknown; worktreeError?: string };
+    }).state;
+    expect(host.listCalls).toBe(1);
+    expect(state.agents).toEqual([
+      expect.objectContaining({ id: choice.id, name: choice.name }),
+    ]);
+    expect(state.workspace).toBeUndefined();
+    expect(state.worktreeError).toBeUndefined();
+    expect(mocks.showErrorMessage).not.toHaveBeenCalled();
+
+    const folder = { fsPath: "/chosen/project" };
+    mocks.showOpenDialog.mockResolvedValueOnce([folder] as never);
+    await resolved.receive({ type: "open_workspace" });
+    expect(mocks.showOpenDialog).toHaveBeenCalledWith({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      openLabel: "Open folder",
+      title: "Open a folder for Brokk ACP",
+    });
+    expect(mocks.executeCommand).toHaveBeenCalledWith("vscode.openFolder", folder);
+  });
+
   it("handles connection and session event lifecycles", async () => {
     const context = extensionContext();
     const host = new FakeHost();

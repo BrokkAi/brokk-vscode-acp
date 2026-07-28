@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show a clear Open Folder state instead of empty session controls when VS Code has no folder open.
+
 ## 0.4.0 - 2026-07-28
 
 - Add Git worktree-aware sessions with creation, registered-worktree reuse,

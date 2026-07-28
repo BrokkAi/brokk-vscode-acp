@@ -1207,7 +1207,11 @@ export function webviewHtml(webview: vscode.Webview): string {
       const status = active?.status || appState.connection?.phase || 'idle';
       elements['top-meta'].textContent = active
         ? active.agentName + ' · ' + statusLabel(status) + (active.worktree ? ' · ' + active.worktree.name : '')
-        : appState.connection?.phase === 'connecting' ? 'Connecting to agent' : 'Open agent coding';
+        : appState.connection?.phase === 'connecting'
+          ? 'Connecting to agent'
+          : appState.workspace?.path
+            ? 'Open agent coding'
+            : 'Open a folder to start';
       elements['status-dot'].className = 'status-dot ' + status;
       elements['open-worktree'].classList.toggle('hidden', !active?.worktree);
       elements['open-worktree'].title = active?.worktree
@@ -1215,14 +1219,21 @@ export function webviewHtml(webview: vscode.Webview): string {
         : 'Open worktree in a new VS Code window';
       elements['start-title'].textContent = appState.relinkSession
         ? 'Relink saved session'
-        : 'Start an agent session';
+        : appState.workspace?.path
+          ? 'Start an agent session'
+          : 'Open a folder to start';
       elements['start-lede'].textContent = appState.relinkSession
         ? 'Choose the checkout that should resume “' + appState.relinkSession.title + '”.'
-        : 'Use Anvil, a custom server, or any agent from the official ACP registry.';
+        : appState.workspace?.path
+          ? 'Use Anvil, a custom server, or any agent from the official ACP registry.'
+          : 'Brokk ACP agents work inside a project folder. Open one to choose an agent and working directory.';
       elements['start-button'].textContent = appState.relinkSession
         ? 'Relink and resume'
         : 'New session';
-      elements['browse-button'].classList.toggle('hidden', Boolean(appState.relinkSession));
+      elements['browse-button'].classList.toggle(
+        'hidden',
+        Boolean(appState.relinkSession) || !appState.workspace?.path
+      );
       renderWorkingDirectoryPicker();
       renderAgentPicker();
       renderSessions();
@@ -1258,7 +1269,10 @@ export function webviewHtml(webview: vscode.Webview): string {
       const agent = selectedAgent();
       if (!agent) {
         elements['agent-description'].textContent = 'No ACP agents are available.';
-        elements['start-button'].disabled = true;
+        elements['install-row'].classList.add('hidden');
+        elements.agent.disabled = Boolean(appState.relinkSession);
+        elements['start-button'].disabled = Boolean(appState.workspace?.path);
+        elements['browse-button'].disabled = true;
         return;
       }
       const detail = [agent.description, agent.source === 'registry' && agent.version ? 'v' + agent.version : '', agent.requirement || '']
@@ -1266,15 +1280,36 @@ export function webviewHtml(webview: vscode.Webview): string {
       elements['agent-description'].textContent = detail;
       elements['install-row'].classList.toggle('hidden', !agent.installable);
       elements.agent.disabled = Boolean(appState.relinkSession);
-      elements['start-button'].disabled = !agent.ready;
+      elements['start-button'].disabled = Boolean(appState.workspace?.path) && !agent.ready;
       elements['browse-button'].disabled =
-        !agent.ready || elements['working-directory'].value === 'create';
+        !appState.workspace?.path ||
+        !agent.ready ||
+        elements['working-directory'].value === 'create';
     }
 
     function renderWorkingDirectoryPicker() {
       const picker = elements['working-directory'];
       const current = workingDirectoryValue || picker.value || 'workspace';
       picker.replaceChildren();
+      const hasWorkspace = Boolean(appState.workspace?.path);
+      elements['refresh-worktrees'].classList.toggle('hidden', !hasWorkspace);
+
+      if (!hasWorkspace) {
+        const unavailable = document.createElement('option');
+        unavailable.value = 'unavailable';
+        unavailable.textContent = 'No folder open';
+        picker.appendChild(unavailable);
+        picker.value = 'unavailable';
+        picker.disabled = true;
+        workingDirectoryValue = 'unavailable';
+        elements['workspace-description'].textContent =
+          'Open a project folder before starting or loading an ACP session.';
+        if (!appState.relinkSession) {
+          elements['start-button'].textContent = 'Open folder';
+        }
+        return;
+      }
+      picker.disabled = false;
 
       const workspace = document.createElement('option');
       workspace.value = 'workspace';
@@ -2327,6 +2362,10 @@ export function webviewHtml(webview: vscode.Webview): string {
       renderAgentPicker();
     };
     elements['start-button'].onclick = () => {
+      if (!appState.workspace?.path) {
+        post('open_workspace');
+        return;
+      }
       const agent = selectedAgent();
       if (!agent) return;
       if (appState.relinkSession) {
