@@ -4,6 +4,8 @@
 
 - Add Git worktree-aware sessions with creation, registered-worktree reuse,
   exact checkout persistence and recovery, and guarded cleanup.
+- Keep streaming activity on only the current transcript segment so tool and
+  thought interleaving cannot leave duplicate blinking cursors behind.
 
 ## 0.3.8 - 2026-07-27
 

@@ -466,6 +466,9 @@ export function webviewHtml(webview: vscode.Webview): string {
       animation: blink 1s steps(2) infinite;
     }
     @keyframes blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .streaming-caret::after { animation: none; }
+    }
     .thought {
       margin: -6px 0 13px;
       color: var(--vscode-descriptionForeground);
@@ -1482,6 +1485,15 @@ export function webviewHtml(webview: vscode.Webview): string {
       const visibleEntries = Array.isArray(active.entries)
         ? active.entries.filter(entry => entry?.kind !== 'plan')
         : [];
+      const finalEntry = visibleEntries.at(-1);
+      const activeStreamingAssistantId =
+        active.status === 'running' &&
+        finalEntry?.kind === 'assistant' &&
+        finalEntry.status === 'streaming' &&
+        typeof finalEntry.text === 'string' &&
+        finalEntry.text.trim()
+          ? finalEntry.id
+          : undefined;
       inner.replaceChildren();
       if (!visibleEntries.length) {
         const welcome = document.createElement('div');
@@ -1508,7 +1520,9 @@ export function webviewHtml(webview: vscode.Webview): string {
         }
         inner.appendChild(welcome);
       } else {
-        for (const entry of visibleEntries) inner.appendChild(renderEntry(entry, active.status));
+        for (const entry of visibleEntries) {
+          inner.appendChild(renderEntry(entry, entry.id === activeStreamingAssistantId));
+        }
       }
       if (nearBottom) viewport.scrollTop = viewport.scrollHeight;
     }
@@ -1592,7 +1606,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       dock.appendChild(shell);
     }
 
-    function renderEntry(entry, sessionStatus) {
+    function renderEntry(entry, showStreamingCaret) {
       const wrapper = document.createElement('div');
       wrapper.className = 'entry ' + entry.kind;
       wrapper.dataset.entryId = entry.id;
@@ -1629,7 +1643,7 @@ export function webviewHtml(webview: vscode.Webview): string {
       }
       if (entry.kind === 'assistant') {
         const body = document.createElement('div');
-        body.className = 'assistant-body' + (entry.status === 'streaming' && sessionStatus === 'running' ? ' streaming-caret' : '');
+        body.className = 'assistant-body' + (showStreamingCaret ? ' streaming-caret' : '');
         renderMarkdown(body, entry.text || '');
         wrapper.appendChild(body);
         return wrapper;

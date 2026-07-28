@@ -203,7 +203,7 @@ describe("SessionStore persistence and lifecycle", () => {
     expect(active.status).toBe("ready");
     expect(active.entries.find((entry) => entry.kind === "assistant")).toMatchObject({
       text: "Hello world",
-      status: "end_turn",
+      status: "completed",
     });
     expect(active.entries.find((entry) => entry.kind === "thought")?.text).toBe("[README.md]");
     expect(
@@ -227,6 +227,60 @@ describe("SessionStore persistence and lifecycle", () => {
     expect(active.usage).toEqual({ used: 11 });
     expect(active.availableCommands).toEqual([{ name: "review" }]);
     expect(active.currentModeId).toBe("plan");
+  });
+
+  it("keeps only the current transcript segment streaming as updates interleave", () => {
+    const { context } = contextWith();
+    const store = new SessionStore(context);
+    store.create({ id: "agent", name: "Agent" }, "/workspace");
+    store.setSessionStarted("remote", "new", [], undefined);
+    store.beginTurn("Investigate");
+
+    store.applySessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "I will inspect this." },
+    });
+    store.applySessionUpdate({
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "Tracing the code" },
+    });
+    store.applySessionUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "tool-1",
+      title: "Read source",
+      status: "pending",
+    });
+    store.applySessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "The source shows the cause." },
+    });
+
+    const entries = store.snapshot().active!.entries;
+    expect(
+      entries
+        .filter((entry) => entry.kind === "assistant" || entry.kind === "thought")
+        .map((entry) => ({ kind: entry.kind, status: entry.status })),
+    ).toEqual([
+      { kind: "assistant", status: "completed" },
+      { kind: "thought", status: "completed" },
+      { kind: "assistant", status: "streaming" },
+    ]);
+    expect(entries.filter((entry) => entry.status === "streaming")).toHaveLength(1);
+
+    store.addPermission("permission-1", { title: "Run tests" }, []);
+    expect(
+      store.snapshot().active!.entries.filter((entry) => entry.status === "streaming"),
+    ).toHaveLength(0);
+
+    store.applySessionUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Waiting for permission." },
+    });
+    store.turnCompleted("cancelled");
+    expect(
+      store.snapshot().active!.entries.filter((entry) => entry.status === "streaming"),
+    ).toHaveLength(0);
+    expect(store.snapshot().active!.entries.at(-1)?.status).toBe("cancelled");
   });
 
   it("backs up a cached transcript during replay and restores it on disconnect", () => {
