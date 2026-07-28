@@ -361,7 +361,46 @@ describe("webview client", () => {
       false,
     );
 
-    harness.document.querySelector<HTMLButtonElement>(".image-preview-remove")!.click();
+    const gif = new harness.window.File(
+      [new TextEncoder().encode("GIF89a")],
+      "second.gif",
+      { type: "image/gif" },
+    );
+    Object.defineProperty(input, "files", { configurable: true, value: [gif] });
+    input.dispatchEvent(new harness.window.Event("change"));
+    await harness.window.happyDOM.waitUntilComplete();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(
+      [...harness.document.querySelectorAll(".image-preview-name")].map(
+        (element) => element.textContent,
+      ),
+    ).toEqual(["screen.png", "second.gif"]);
+    expect(
+      harness.document.querySelector<HTMLButtonElement>(".image-preview-add")?.textContent,
+    ).toBe("+Add · 2/4");
+    expect(
+      harness.document.querySelector<HTMLButtonElement>("#attach-button")?.title,
+    ).toBe("Attach more images (2 of 4 attached)");
+
+    prompt.value = "Compare these";
+    prompt.dispatchEvent(new harness.window.Event("input"));
+    harness.document.querySelector<HTMLButtonElement>("#send-button")!.click();
+    expect(harness.posted.at(-1)).toEqual({
+      type: "prompt",
+      text: "Compare these",
+      images: [
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          name: "screen.png",
+        },
+        {
+          data: "R0lGODlh",
+          mimeType: "image/gif",
+          name: "second.gif",
+        },
+      ],
+    });
     expect(harness.document.querySelector(".image-preview")).toBeNull();
 
     const composer = harness.document.querySelector<HTMLElement>("#composer")!;

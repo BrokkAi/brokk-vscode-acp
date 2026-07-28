@@ -804,6 +804,29 @@ export function webviewHtml(webview: vscode.Webview): string {
       font-size: 12px;
       line-height: 1;
     }
+    .image-preview-add {
+      width: 62px;
+      height: 48px;
+      display: grid;
+      place-content: center;
+      flex: 0 0 62px;
+      gap: 1px;
+      border: 1px dashed var(--border);
+      border-radius: 6px;
+      color: var(--vscode-descriptionForeground);
+      background: transparent;
+      font-size: 9px;
+      line-height: 1.15;
+    }
+    .image-preview-add:hover {
+      border-color: var(--vscode-focusBorder);
+      color: var(--vscode-foreground);
+      background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
+    }
+    .image-preview-add-icon {
+      font-size: 18px;
+      line-height: 1;
+    }
     textarea {
       width: 100%;
       min-height: 52px;
@@ -1052,7 +1075,7 @@ export function webviewHtml(webview: vscode.Webview): string {
             <textarea id="prompt" rows="2" placeholder="Ask the agent…" role="combobox" aria-autocomplete="list" aria-controls="slash-menu" aria-expanded="false"></textarea>
             <div class="composer-footer">
               <input id="image-input" class="visually-hidden" type="file" accept="${PROMPT_IMAGE_MIME_TYPES.join(",")}" multiple>
-              <button id="attach-button" class="attach-button" title="Attach image" aria-label="Attach image">
+              <button id="attach-button" class="attach-button" title="Attach images" aria-label="Attach images">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 12.5 14.9 6.1a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8.2-8.2"/><path d="m6.4 14.6 8.5-8.5"/></svg>
               </button>
               <span id="composer-hint" class="composer-hint">⌘↵ to send</span>
@@ -1661,6 +1684,22 @@ export function webviewHtml(webview: vscode.Webview): string {
         card.append(preview, name, remove);
         previews.appendChild(card);
       });
+      if (pendingImages.length > 0 && pendingImages.length < imageLimits.count) {
+        const add = document.createElement('button');
+        add.className = 'image-preview-add';
+        add.type = 'button';
+        add.title = 'Attach another image (' + pendingImages.length +
+          ' of ' + imageLimits.count + ' attached)';
+        add.setAttribute('aria-label', add.title);
+        const icon = document.createElement('span');
+        icon.className = 'image-preview-add-icon';
+        icon.textContent = '+';
+        const label = document.createElement('span');
+        label.textContent = 'Add · ' + pendingImages.length + '/' + imageLimits.count;
+        add.append(icon, label);
+        add.onclick = () => elements['image-input'].click();
+        previews.appendChild(add);
+      }
     }
 
     function showAttachmentError(message) {
@@ -1771,9 +1810,13 @@ export function webviewHtml(webview: vscode.Webview): string {
       elements['send-button'].disabled = !canSubmitPrompt(active);
       elements['attach-button'].disabled = !ready || !imagePromptsSupported();
       elements['image-input'].disabled = !ready || !imagePromptsSupported();
+      const attachmentTitle = pendingImages.length
+        ? 'Attach more images (' + pendingImages.length + ' of ' + imageLimits.count + ' attached)'
+        : 'Attach images (up to ' + imageLimits.count + ')';
       elements['attach-button'].title = imagePromptsSupported()
-        ? 'Attach image'
+        ? attachmentTitle
         : 'This agent does not advertise image prompt support';
+      elements['attach-button'].setAttribute('aria-label', elements['attach-button'].title);
       elements['composer-hint'].classList.toggle('error', Boolean(attachmentError));
       elements['composer-hint'].textContent = defaultComposerHint(active);
       renderImagePreviews();

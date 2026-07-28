@@ -61,8 +61,9 @@ Markdown, and the prompt composer together in the VS Code sidebar.
   Use Up/Down to navigate, Enter or Tab to insert, and Escape to close.
 - Attach, paste, or drag and drop PNG, JPEG, GIF, and WebP images when the
   connected agent advertises the standard ACP image prompt capability.
-  Attachments are previewed before sending and remain identified in the
-  transcript.
+  Add up to four images in one prompt by selecting or dropping several at once,
+  or by using the visible add-another control beside the previews. Attachments
+  are previewed before sending and remain identified in the transcript.
 
 ### ACP client surface
 
@@ -116,7 +117,8 @@ code --install-extension brokk.brokk-vscode-acp
    exposed by that agent.
 5. Prompt the agent from the composer. Use `/` to discover commands advertised
    for the active session. For image-capable agents, use the attachment button,
-   paste an image, or drag image files directly onto the composer.
+   paste an image, or drag image files directly onto the composer. Select
+   several files at once or add them one at a time for a multi-image prompt.
 6. Review permission requests and agent activity in the structured transcript.
    Stop cancels the active prompt.
 

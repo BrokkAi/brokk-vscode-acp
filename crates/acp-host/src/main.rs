@@ -1570,10 +1570,16 @@ mod tests {
         command_tx
             .send(HostCommand::Prompt {
                 text: "describe it".into(),
-                images: vec![PromptImage {
-                    data: "iVBORw0KGgo=".into(),
-                    mime_type: "image/png".into(),
-                }],
+                images: vec![
+                    PromptImage {
+                        data: "iVBORw0KGgo=".into(),
+                        mime_type: "image/png".into(),
+                    },
+                    PromptImage {
+                        data: "R0lGODlh".into(),
+                        mime_type: "image/gif".into(),
+                    },
+                ],
             })
             .expect("image prompt");
         next_event(&mut events, "turn_started").await;
@@ -1591,6 +1597,11 @@ mod tests {
                     "type": "image",
                     "data": "iVBORw0KGgo=",
                     "mimeType": "image/png"
+                },
+                {
+                    "type": "image",
+                    "data": "R0lGODlh",
+                    "mimeType": "image/gif"
                 }
             ])
         );
