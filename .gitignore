@@ -5,7 +5,10 @@
 /bin/
 /licenses/
 /source/
+/coverage/
+/coverage-rust.lcov
 *.vsix
 .DS_Store
 /.bifrost/
 /.brokk/
+__pycache__/

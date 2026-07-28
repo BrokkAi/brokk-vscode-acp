@@ -21,6 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: cargo install --locked cargo-about --version 0.9.1 --features cli
+      - run: cargo install --locked cargo-llvm-cov --version 0.8.7
       - run: cargo fetch --locked
       - run: npm test
       - run: npm run license:check

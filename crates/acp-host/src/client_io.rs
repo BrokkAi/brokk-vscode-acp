@@ -447,6 +447,7 @@ fn poll_exit(entry: Arc<TerminalEntry>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::EnvVariable;
 
     #[tokio::test]
     async fn workspace_io_rejects_paths_outside_root() {
@@ -482,5 +483,264 @@ mod tests {
 
         assert!(!broker.resolve("request", Some("always_allow".into())).await);
         assert_eq!(receiver.await.expect("permission response"), None);
+    }
+
+    #[tokio::test]
+    async fn permission_broker_resolves_cancels_and_rejects_unknown_requests() {
+        let broker = PermissionBroker::default();
+        assert!(!broker.resolve("missing", None).await);
+
+        let (selected_tx, selected_rx) = oneshot::channel();
+        broker.pending.lock().await.insert(
+            "selected".into(),
+            PendingPermission {
+                allowed_options: HashSet::from(["allow_once".into()]),
+                sender: selected_tx,
+            },
+        );
+        assert!(broker.resolve("selected", Some("allow_once".into())).await);
+        assert_eq!(
+            selected_rx.await.expect("selected response"),
+            Some("allow_once".into())
+        );
+
+        let (cancelled_tx, cancelled_rx) = oneshot::channel();
+        broker.pending.lock().await.insert(
+            "cancelled".into(),
+            PendingPermission {
+                allowed_options: HashSet::new(),
+                sender: cancelled_tx,
+            },
+        );
+        broker.cancel_all().await;
+        assert_eq!(cancelled_rx.await.expect("cancelled response"), None);
+        assert!(broker.pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn workspace_io_reads_writes_slices_and_validates_paths() {
+        let root = tempfile::tempdir().expect("workspace");
+        let workspace = WorkspaceIo::new(root.path()).expect("workspace IO");
+        let file = root.path().join("notes.txt");
+        tokio::fs::write(&file, "one\ntwo\nthree\n")
+            .await
+            .expect("seed file");
+
+        let full = workspace
+            .read_text_file(ReadTextFileRequest::new("session", &file))
+            .await
+            .expect("read full file");
+        assert_eq!(full.content, "one\ntwo\nthree\n");
+        let slice = workspace
+            .read_text_file(ReadTextFileRequest::new("session", &file).line(2).limit(1))
+            .await
+            .expect("read selected line");
+        assert_eq!(slice.content, "two\n");
+        assert!(
+            workspace
+                .read_text_file(ReadTextFileRequest::new("session", &file).line(0))
+                .await
+                .expect_err("zero line")
+                .to_string()
+                .contains("1-based")
+        );
+        assert!(
+            workspace
+                .read_text_file(ReadTextFileRequest::new("session", "relative.txt"))
+                .await
+                .expect_err("relative read")
+                .to_string()
+                .contains("absolute")
+        );
+
+        let nested = root.path().join("nested");
+        tokio::fs::create_dir(&nested)
+            .await
+            .expect("nested directory");
+        let written = nested.join("written.txt");
+        workspace
+            .write_text_file(WriteTextFileRequest::new("session", &written, "created"))
+            .await
+            .expect("write workspace file");
+        assert_eq!(
+            tokio::fs::read_to_string(&written)
+                .await
+                .expect("read written file"),
+            "created"
+        );
+        assert!(
+            workspace
+                .write_text_file(WriteTextFileRequest::new("session", "relative.txt", "bad",))
+                .await
+                .is_err()
+        );
+
+        let outside = tempfile::tempdir().expect("outside");
+        assert!(
+            workspace
+                .write_text_file(WriteTextFileRequest::new(
+                    "session",
+                    outside.path().join("escape.txt"),
+                    "bad",
+                ))
+                .await
+                .expect_err("outside write")
+                .to_string()
+                .contains("outside workspace")
+        );
+        assert!(WorkspaceIo::new(&root.path().join("missing")).is_err());
+    }
+
+    #[tokio::test]
+    async fn terminal_lifecycle_captures_truncates_kills_releases_and_shuts_down() {
+        let root = tempfile::tempdir().expect("workspace");
+        let workspace = WorkspaceIo::new(root.path()).expect("workspace IO");
+        let request = CreateTerminalRequest::new("session", "python3")
+            .args(vec![
+                "-c".into(),
+                "import sys; sys.stdout.write('abcdefghijklmnop')".into(),
+            ])
+            .output_byte_limit(8);
+        let created = workspace
+            .create_terminal(request)
+            .await
+            .expect("create terminal");
+        let terminal_id = created.terminal_id.to_string();
+        let status = workspace
+            .wait_for_terminal(WaitForTerminalExitRequest::new(
+                "session",
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait for terminal");
+        assert_eq!(status.exit_status.exit_code, Some(0));
+        let output = workspace
+            .terminal_output(TerminalOutputRequest::new("session", terminal_id.clone()))
+            .await
+            .expect("terminal output");
+        assert_eq!(output.output, "ijklmnop");
+        assert!(output.truncated);
+        assert!(output.exit_status.is_some());
+        workspace
+            .kill_terminal(KillTerminalRequest::new("session", terminal_id.clone()))
+            .await
+            .expect("killing exited terminal is harmless");
+        workspace
+            .release_terminal(ReleaseTerminalRequest::new("session", terminal_id.clone()))
+            .await
+            .expect("release terminal");
+
+        let request = CreateTerminalRequest::new("session", "python3")
+            .args(vec![
+                "-c".into(),
+                "import os; print(os.getcwd()); print(os.environ['BROKK_TEST'])".into(),
+            ])
+            .env(vec![EnvVariable::new("BROKK_TEST", "set")])
+            .cwd(root.path().to_owned());
+        let created = workspace
+            .create_terminal(request)
+            .await
+            .expect("create terminal with cwd");
+        let terminal_id = created.terminal_id.to_string();
+        workspace
+            .wait_for_terminal(WaitForTerminalExitRequest::new(
+                "session",
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("wait for cwd terminal");
+        let output = workspace
+            .terminal_output(TerminalOutputRequest::new("session", terminal_id.clone()))
+            .await
+            .expect("cwd output");
+        assert!(
+            output
+                .output
+                .contains(&root.path().to_string_lossy().into_owned())
+        );
+        assert!(output.output.contains("set"));
+        workspace
+            .release_terminal(ReleaseTerminalRequest::new("session", terminal_id))
+            .await
+            .expect("release cwd terminal");
+
+        let created = workspace
+            .create_terminal(
+                CreateTerminalRequest::new("session", "python3")
+                    .args(vec!["-c".into(), "import time; time.sleep(30)".into()]),
+            )
+            .await
+            .expect("create long terminal");
+        let terminal_id = created.terminal_id.to_string();
+        workspace
+            .kill_terminal(KillTerminalRequest::new("session", terminal_id.clone()))
+            .await
+            .expect("kill running terminal");
+        workspace
+            .wait_for_terminal(WaitForTerminalExitRequest::new(
+                "session",
+                terminal_id.clone(),
+            ))
+            .await
+            .expect("killed terminal exits");
+        workspace
+            .release_terminal(ReleaseTerminalRequest::new("session", terminal_id))
+            .await
+            .expect("release killed terminal");
+
+        let active = workspace
+            .create_terminal(
+                CreateTerminalRequest::new("session", "python3")
+                    .args(vec!["-c".into(), "import time; time.sleep(30)".into()]),
+            )
+            .await
+            .expect("create terminal to release");
+        workspace
+            .release_terminal(ReleaseTerminalRequest::new("session", active.terminal_id))
+            .await
+            .expect("release active terminal");
+
+        workspace
+            .create_terminal(
+                CreateTerminalRequest::new("session", "python3")
+                    .args(vec!["-c".into(), "import time; time.sleep(30)".into()]),
+            )
+            .await
+            .expect("create terminal to shut down");
+        workspace.shutdown().await;
+
+        assert!(
+            workspace
+                .terminal_output(TerminalOutputRequest::new("session", "missing"))
+                .await
+                .is_err()
+        );
+        assert!(
+            workspace
+                .release_terminal(ReleaseTerminalRequest::new("session", "missing"))
+                .await
+                .is_err()
+        );
+        assert!(
+            workspace
+                .kill_terminal(KillTerminalRequest::new("session", "missing"))
+                .await
+                .is_err()
+        );
+        assert!(
+            workspace
+                .wait_for_terminal(WaitForTerminalExitRequest::new("session", "missing"))
+                .await
+                .is_err()
+        );
+        assert!(
+            workspace
+                .create_terminal(
+                    CreateTerminalRequest::new("session", "python3")
+                        .cwd(tempfile::tempdir().expect("outside").path().to_owned()),
+                )
+                .await
+                .is_err()
+        );
     }
 }
