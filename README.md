@@ -54,8 +54,8 @@ Markdown, and the prompt composer together in the VS Code sidebar.
   into coherent turns rather than a raw output stream.
 - Standard ACP plans stay visible in a collapsible progress dock with live
   status, priority, and completion updates.
-- Agent-advertised session configuration options are editable from the compact
-  session toolbar.
+- Agent-advertised configuration values stay visible in a compact session
+  status line, with the full controls available from a dedicated editor.
 - Typing `/` opens autocomplete for the session's live ACP
   `available_commands_update` list, including descriptions and input hints.
   Use Up/Down to navigate, Enter or Tab to insert, and Escape to close.

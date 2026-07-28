@@ -213,89 +213,103 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
     .session-toolbar {
       flex: none;
-      min-height: 38px;
+      min-height: 34px;
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 7px;
       width: 100%;
-      padding: 5px 10px;
-      overflow: visible;
+      padding: 5px 11px;
+      overflow: hidden;
       border-bottom: 1px solid var(--muted-border);
       background: var(--vscode-sideBar-background, var(--vscode-editor-background));
     }
-    .config-bar {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 4px;
-      min-width: 0;
-      max-width: 100%;
-      overflow: visible;
-    }
-    .config-control {
-      position: relative;
-      display: inline-flex;
-      min-width: 0;
+    .config-context {
       flex: none;
-    }
-    .config-control::after {
-      content: "⌄";
-      position: absolute;
-      top: 50%;
-      right: 7px;
       color: var(--vscode-descriptionForeground);
-      font-size: 10px;
-      line-height: 1;
-      pointer-events: none;
-      transform: translateY(-57%);
+      font-size: 10.5px;
+      font-weight: 600;
+      white-space: nowrap;
     }
-    .config-control select {
-      width: var(--config-control-width, 72px);
-      min-width: 66px;
-      max-width: 220px;
-      min-height: 26px;
-      height: 26px;
-      padding: 2px 21px 2px 8px;
+    .config-summary {
+      flex: 1;
+      min-width: 0;
       overflow: hidden;
-      appearance: none;
-      border: 1px solid var(--muted-border);
-      border-radius: 5px;
       color: var(--vscode-foreground);
-      background: transparent;
-      cursor: pointer;
       font-size: 11px;
-      font-weight: 550;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .config-control:hover select {
-      border-color: var(--border);
-      background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
+    .config-link {
+      flex: none;
+      padding: 2px 0;
+      color: var(--vscode-textLink-foreground);
+      background: transparent;
+      font-size: 11px;
+      white-space: nowrap;
     }
-    .config-control select:focus {
-      border-color: var(--vscode-focusBorder);
-      outline: 1px solid var(--vscode-focusBorder);
-      outline-offset: -1px;
+    .config-link:hover {
+      color: var(--vscode-textLink-activeForeground);
+      text-decoration: underline;
     }
-    .config-toggle {
+    .config-panel {
+      flex: none;
+      max-height: min(55vh, 420px);
+      padding: 12px;
+      overflow-x: hidden;
+      overflow-y: auto;
+      border-bottom: 1px solid var(--border);
+      background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+      box-shadow: 0 7px 18px color-mix(in srgb, #000 18%, transparent);
+    }
+    .config-panel-heading {
+      margin-bottom: 10px;
+    }
+    .config-panel-title {
+      font-size: 12.5px;
+      font-weight: 650;
+    }
+    .config-panel-description {
+      margin-top: 2px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10.5px;
+    }
+    .config-editor {
+      display: grid;
+      gap: 9px;
+    }
+    .config-field,
+    .config-switch {
+      display: grid;
+      grid-template-columns: minmax(96px, .75fr) minmax(0, 1.25fr);
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .config-field-name {
+      min-width: 0;
+      overflow: hidden;
+      font-size: 11px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .config-field select {
+      min-width: 0;
+      min-height: 30px;
+      height: 30px;
+    }
+    .config-switch-control {
       display: flex;
       align-items: center;
-      gap: 4px;
-      min-height: 26px;
-      max-width: 130px;
-      padding: 2px 7px;
-      overflow: hidden;
-      border: 1px solid var(--muted-border);
-      border-radius: 5px;
-      color: var(--vscode-foreground);
-      background: transparent;
+      gap: 7px;
+      min-width: 0;
       font-size: 11px;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
-    .config-toggle:hover {
-      border-color: var(--border);
-      background: var(--vscode-toolbar-hoverBackground, var(--accent-soft));
+    .config-switch-control input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--vscode-button-background);
     }
     .transcript {
       flex: 1 1 0;
@@ -826,7 +840,12 @@ export function webviewHtml(webview: vscode.Webview): string {
       .transcript { padding-inline: 9px; }
       .composer-wrap { padding-inline: 6px; }
       .start-actions { flex-direction: column; }
-      .config-bar { display: none; }
+      .config-context { display: none; }
+      .config-field,
+      .config-switch {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 4px;
+      }
     }
   </style>
 </head>
@@ -861,8 +880,17 @@ export function webviewHtml(webview: vscode.Webview): string {
       </section>
       <section id="session-view" class="session-view hidden">
         <div id="session-toolbar" class="session-toolbar" aria-label="Session configuration">
-          <div id="config-bar" class="config-bar"></div>
+          <span class="config-context">Session</span>
+          <span id="config-summary" class="config-summary"></span>
+          <button id="config-button" class="config-link" aria-expanded="false" aria-controls="config-panel">Change</button>
         </div>
+        <section id="config-panel" class="config-panel hidden" aria-label="Session configuration options">
+          <div class="config-panel-heading">
+            <div class="config-panel-title">Session configuration</div>
+            <div class="config-panel-description">Changes apply immediately to this session.</div>
+          </div>
+          <div id="config-editor" class="config-editor"></div>
+        </section>
         <section id="plan-dock" class="plan-dock hidden" aria-label="Agent plan"></section>
         <div id="transcript" class="transcript"><div id="transcript-inner" class="transcript-inner"></div></div>
         <div class="composer-wrap">
@@ -895,12 +923,15 @@ export function webviewHtml(webview: vscode.Webview): string {
     const vscode = acquireVsCodeApi();
     const elements = Object.fromEntries([
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
-      'install-row', 'start-button', 'browse-button', 'config-bar', 'plan-dock', 'transcript',
+      'install-row', 'start-button', 'browse-button', 'session-toolbar', 'config-summary',
+      'config-button', 'config-panel', 'config-editor', 'plan-dock', 'transcript',
       'transcript-inner', 'prompt', 'composer-hint', 'send-button', 'stop-button', 'banner',
       'slash-menu', 'auth-card', 'drawer', 'drawer-backdrop', 'session-list', 'drawer-footer'
     ].map(id => [id, document.getElementById(id)]));
     let appState = { agents: [], selectedAgent: '', connection: { phase: 'idle' }, sessions: [] };
     let drawerOpen = false;
+    let configOpen = false;
+    let configSessionId;
     let renderPending = false;
     let slashMatches = [];
     let slashSelected = 0;
@@ -923,6 +954,14 @@ export function webviewHtml(webview: vscode.Webview): string {
       if (open) renderSessions();
     }
 
+    function setConfigOpen(open) {
+      const hasOptions = supportedConfigOptions(appState.active?.configOptions).length > 0;
+      configOpen = Boolean(open && hasOptions);
+      elements['config-panel'].classList.toggle('hidden', !configOpen);
+      elements['config-button'].textContent = configOpen ? 'Done' : 'Change';
+      elements['config-button'].setAttribute('aria-expanded', String(configOpen));
+    }
+
     function statusLabel(status) {
       return ({
         connecting: 'Connecting',
@@ -936,6 +975,10 @@ export function webviewHtml(webview: vscode.Webview): string {
     function render() {
       renderPending = false;
       const active = appState.active;
+      if (active?.localId !== configSessionId) {
+        configOpen = false;
+        configSessionId = active?.localId;
+      }
       elements.empty.classList.toggle('hidden', Boolean(active));
       elements['session-view'].classList.toggle('hidden', !active);
       elements['top-title'].textContent = active ? active.title : 'Brokk ACP';
@@ -953,6 +996,8 @@ export function webviewHtml(webview: vscode.Webview): string {
         renderPlanDock(active);
         renderTranscript(active);
         renderComposer(active);
+      } else {
+        setConfigOpen(false);
       }
     }
 
@@ -1072,13 +1117,26 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
 
     function renderConfig(options) {
-      const bar = elements['config-bar'];
-      bar.replaceChildren();
-      for (const option of Array.isArray(options) ? options : []) {
-        if (!option || !option.id) continue;
+      const supported = supportedConfigOptions(options);
+      const toolbar = elements['session-toolbar'];
+      const editor = elements['config-editor'];
+      toolbar.classList.toggle('hidden', supported.length === 0);
+      editor.replaceChildren();
+
+      const summaryValues = supported.map(configValueLabel).filter(Boolean);
+      elements['config-summary'].textContent = summaryValues.join(' · ');
+      elements['config-summary'].title = supported
+        .map(option => (option.name || option.id) + ': ' + configValueLabel(option))
+        .join(' · ');
+
+      for (const option of supported) {
         if (option.type === 'select') {
           const wrapper = document.createElement('label');
-          wrapper.className = 'config-control';
+          wrapper.className = 'config-field';
+          const name = document.createElement('span');
+          name.className = 'config-field-name';
+          name.textContent = option.name || option.id;
+          name.title = option.name || option.id;
           const select = document.createElement('select');
           select.setAttribute('aria-label', option.name || option.id);
           const choices = flattenOptions(option.options).filter(choice =>
@@ -1087,37 +1145,45 @@ export function webviewHtml(webview: vscode.Webview): string {
           for (const choice of choices) {
             const node = document.createElement('option');
             node.value = choice.value;
-            node.textContent = compactConfigValue(choice);
+            node.textContent = String(choice.name || choice.value);
             node.selected = choice.value === option.currentValue;
             select.appendChild(node);
           }
-          syncConfigControl(wrapper, select, option, choices);
           select.onchange = () => {
-            syncConfigControl(wrapper, select, option, choices);
             post('set_config', {
               config_id: option.id,
               value: { value: select.value }
             });
           };
-          wrapper.appendChild(select);
-          bar.appendChild(wrapper);
+          wrapper.append(name, select);
+          editor.appendChild(wrapper);
         } else if (option.type === 'boolean') {
+          const row = document.createElement('div');
+          row.className = 'config-switch';
+          const name = document.createElement('span');
+          name.className = 'config-field-name';
+          name.textContent = option.name || option.id;
+          name.title = option.name || option.id;
           const label = document.createElement('label');
-          label.className = 'config-toggle';
-          label.title = option.name || option.id;
+          label.className = 'config-switch-control';
           const checkbox = document.createElement('input');
           checkbox.type = 'checkbox';
           checkbox.checked = option.currentValue === true;
-          checkbox.onchange = () => post('set_config', {
-            config_id: option.id,
-            value: { type: 'boolean', value: checkbox.checked }
-          });
           const copy = document.createElement('span');
-          copy.textContent = option.name || option.id;
+          copy.textContent = checkbox.checked ? 'On' : 'Off';
+          checkbox.onchange = () => {
+            copy.textContent = checkbox.checked ? 'On' : 'Off';
+            post('set_config', {
+              config_id: option.id,
+              value: { type: 'boolean', value: checkbox.checked }
+            });
+          };
           label.append(checkbox, copy);
-          bar.appendChild(label);
+          row.append(name, label);
+          editor.appendChild(row);
         }
       }
+      setConfigOpen(configOpen);
     }
 
     function renderTranscript(active) {
@@ -1673,20 +1739,19 @@ export function webviewHtml(webview: vscode.Webview): string {
       return options.flatMap(entry => entry && Array.isArray(entry.options) ? entry.options : [entry]);
     }
 
-    function compactConfigValue(choice) {
-      let value = String(choice.name || choice.value || '');
-      value = value.replace(/^Default\\s*\\(([^)]+)\\)$/i, 'Default · $1');
-      return value;
+    function supportedConfigOptions(options) {
+      if (!Array.isArray(options)) return [];
+      return options.filter(option =>
+        option && option.id && (option.type === 'select' || option.type === 'boolean')
+      );
     }
 
-    function syncConfigControl(wrapper, select, option, choices) {
-      const selected = choices.find(choice => choice.value === select.value);
-      const fullValue = selected ? String(selected.name || selected.value) : select.value;
-      const compactValue = selected ? compactConfigValue(selected) : select.value;
-      const label = option.name || option.id;
-      wrapper.title = label + ': ' + fullValue;
-      const width = Math.min(220, Math.max(66, Math.ceil(compactValue.length * 6.35 + 39)));
-      select.style.setProperty('--config-control-width', width + 'px');
+    function configValueLabel(option) {
+      if (option.type === 'boolean') return option.currentValue === true ? 'On' : 'Off';
+      const selected = flattenOptions(option.options).find(choice =>
+        choice && choice.value === option.currentValue
+      );
+      return String(selected?.name || selected?.value || option.currentValue || 'Unset');
     }
 
     function toolContentText(value) {
@@ -1741,6 +1806,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     document.getElementById('new-button').onclick = () => post('show_start');
     document.getElementById('close-drawer').onclick = () => setDrawer(false);
     elements['drawer-backdrop'].onclick = () => setDrawer(false);
+    elements['config-button'].onclick = () => setConfigOpen(!configOpen);
     document.getElementById('drawer-new').onclick = () => { setDrawer(false); post('show_start'); };
     document.getElementById('refresh-sessions').onclick = () => post('refresh_sessions');
     document.getElementById('install-button').onclick = () => {
@@ -1814,6 +1880,13 @@ export function webviewHtml(webview: vscode.Webview): string {
       slashSelected = 0;
       drawSlashMenu();
     };
+
+    window.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || !configOpen) return;
+      event.preventDefault();
+      setConfigOpen(false);
+      elements['config-button'].focus();
+    });
 
     window.addEventListener('message', ({ data }) => {
       if (data.type !== 'app_state') return;
