@@ -68,6 +68,8 @@ function baseState(overrides: Record<string, unknown> = {}) {
     selectedAgent: "bundled:anvil",
     connection: { phase: "idle" },
     sessions: [],
+    workspace: { path: "/workspace", name: "workspace" },
+    worktrees: [],
     ...overrides,
   };
 }
@@ -120,6 +122,7 @@ describe("webview client", () => {
     expect(harness.posted.at(-1)).toEqual({
       type: "new_session",
       agent_id: "bundled:anvil",
+      working_directory: { kind: "workspace" },
     });
 
     agent.value = "registry:codex";
@@ -134,6 +137,107 @@ describe("webview client", () => {
     expect(harness.posted.at(-1)).toEqual({
       type: "install",
       agent_id: "registry:codex",
+    });
+  });
+
+  it("selects, describes, and opens Git worktrees", async () => {
+    const harness = await createHarness();
+    await harness.sendState(
+      baseState({
+        worktrees: [
+          {
+            path: "/workspace",
+            name: "workspace",
+            branch: "master",
+            current: true,
+            managed: false,
+          },
+          {
+            path: "/worktrees/keen-fox",
+            name: "keen-fox",
+            branch: "feature",
+            current: false,
+            managed: true,
+          },
+        ],
+      }),
+    );
+    const picker = harness.document.querySelector<HTMLSelectElement>("#working-directory")!;
+    expect([...picker.options].map((option) => option.textContent)).toEqual([
+      "Current workspace — workspace",
+      "Create a new worktree",
+      "Use keen-fox — feature · Brokk",
+    ]);
+
+    picker.value = "create";
+    picker.dispatchEvent(new harness.window.Event("change"));
+    expect(harness.document.querySelector("#workspace-description")?.textContent).toContain(
+      ".brokk/worktrees",
+    );
+    expect(harness.document.querySelector<HTMLButtonElement>("#browse-button")!.disabled).toBe(
+      true,
+    );
+    harness.document.querySelector<HTMLButtonElement>("#start-button")!.click();
+    expect(harness.posted.at(-1)).toEqual({
+      type: "new_session",
+      agent_id: "bundled:anvil",
+      working_directory: { kind: "create" },
+    });
+
+    picker.value = "existing:1";
+    picker.dispatchEvent(new harness.window.Event("change"));
+    harness.document.querySelector<HTMLButtonElement>("#browse-button")!.click();
+    expect(harness.posted.at(-1)).toEqual({
+      type: "browse_sessions",
+      agent_id: "bundled:anvil",
+      working_directory: { kind: "existing", path: "/worktrees/keen-fox" },
+    });
+    harness.document.querySelector<HTMLButtonElement>("#refresh-worktrees")!.click();
+    expect(harness.posted.at(-1)).toEqual({ type: "refresh_worktrees" });
+
+    await harness.sendState(
+      baseState({
+        active: activeSession({
+          cwd: "/worktrees/keen-fox",
+          worktree: {
+            projectRoot: "/workspace",
+            worktreeRoot: "/worktrees/keen-fox",
+            name: "keen-fox",
+            managed: true,
+          },
+        }),
+      }),
+    );
+    expect(harness.document.querySelector("#top-meta")?.textContent).toContain("keen-fox");
+    const open = harness.document.querySelector<HTMLButtonElement>("#open-worktree")!;
+    expect(open.classList.contains("hidden")).toBe(false);
+    open.click();
+    expect(harness.posted.at(-1)).toEqual({
+      type: "open_worktree",
+      local_id: "local-1",
+    });
+
+    await harness.sendState(
+      baseState({
+        relinkSession: {
+          localId: "saved-local",
+          title: "Saved task",
+          agentId: "bundled:anvil",
+        },
+      }),
+    );
+    expect(harness.document.querySelector("#start-title")?.textContent).toBe(
+      "Relink saved session",
+    );
+    expect(harness.document.querySelector<HTMLSelectElement>("#agent")!.disabled).toBe(true);
+    expect(
+      harness.document.querySelector("#browse-button")?.classList.contains("hidden"),
+    ).toBe(true);
+    harness.document.querySelector<HTMLButtonElement>("#start-button")!.click();
+    expect(harness.posted.at(-1)).toEqual({
+      type: "relink_session",
+      local_id: "saved-local",
+      working_directory: { kind: "workspace" },
     });
   });
 

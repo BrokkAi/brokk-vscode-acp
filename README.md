@@ -46,6 +46,13 @@ Markdown, and the prompt composer together in the VS Code sidebar.
   the corresponding ACP session capabilities.
 - Session metadata and structured transcripts are cached per workspace and
   restored after a VS Code reload.
+- New sessions can use the current workspace, create a detached checkout under
+  `.brokk/worktrees/`, or reuse any registered Git worktree. Nested workspace
+  paths are preserved, and the chosen checkout becomes the ACP process,
+  filesystem, and terminal boundary.
+- Saved worktree sessions reopen in their recorded checkout. If that checkout
+  disappears, Brokk ACP asks for an explicit replacement instead of silently
+  falling back to the main workspace.
 - Reopening a remote session prefers `session/load` for an authoritative
   transcript replay and falls back to `session/resume` when load is unavailable.
 - Connection startup, authentication, session loading, cancellation, errors,
@@ -114,8 +121,9 @@ code --install-extension brokk.brokk-vscode-acp
 1. Open a trusted folder or workspace in VS Code.
 2. Open **Brokk ACP** from the Activity Bar.
 3. Choose bundled **Anvil**, an installed registry agent, or a custom agent.
-4. Start a new session, or open **Sessions** to discover and resume sessions
-   exposed by that agent.
+4. Choose the current workspace, a new named worktree, or an existing
+   registered worktree. Then start a new session, or open **Sessions** to
+   discover and resume sessions exposed by that agent.
 5. Prompt the agent from the composer. Use `/` to discover commands advertised
    for the active session. For image-capable agents, use the attachment button,
    paste an image, or drag image files directly onto the composer. Select
@@ -167,8 +175,9 @@ deprecated.
 - One ACP agent connection and one active session run at a time in each VS Code
   window. Starting or opening another session cleanly replaces the current
   connection.
-- The first folder in a multi-root workspace is the ACP working directory and
-  file-access boundary.
+- The first folder in a multi-root workspace supplies the Git project context.
+  The current folder or explicitly selected worktree is the ACP working
+  directory and file-access boundary.
 - Session listing, deletion, loading, and resuming depend on capabilities
   advertised by the selected agent.
 - Resource attachments, elicitation forms, and session forking are not yet
@@ -181,7 +190,8 @@ deprecated.
 ACP agents are coding agents and may request file edits or commands. Brokk ACP:
 
 - asks using the exact permission choices supplied by the agent;
-- advertises file access only within the active workspace folder;
+- advertises file access only within the active workspace folder or selected
+  worktree;
 - resolves existing paths and write ancestors before allowing access;
 - runs client-owned terminal commands inside that workspace folder;
 - caps retained terminal output;

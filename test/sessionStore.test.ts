@@ -77,7 +77,16 @@ describe("SessionStore persistence and lifecycle", () => {
     const store = new SessionStore(context);
     expect(store.activate("missing")).toBeUndefined();
 
-    const first = store.create({ id: "one", name: "One" }, "/workspace");
+    const first = store.create(
+      { id: "one", name: "One" },
+      "/workspace/.brokk/worktrees/keen-fox",
+      {
+        projectRoot: "/workspace",
+        worktreeRoot: "/workspace/.brokk/worktrees/keen-fox",
+        name: "keen-fox",
+        managed: true,
+      },
+    );
     store.setConnected("Renamed", { sessionCapabilities: { list: {} } });
     store.setConfigOptions([{ id: "model" }]);
     store.setSessionStarted("remote", "new", [{ id: "mode" }], { currentModeId: "agent" });
@@ -89,7 +98,16 @@ describe("SessionStore persistence and lifecycle", () => {
       status: "ready",
       title: "New session",
       configOptions: [{ id: "mode" }],
+      worktree: { name: "keen-fox", managed: true },
     });
+    expect(store.snapshot().sessions[0]).toMatchObject({
+      cwd: "/workspace/.brokk/worktrees/keen-fox",
+      worktree: { name: "keen-fox" },
+    });
+    store.mergeRemoteSessions({ id: "one", name: "One" }, "/workspace", [
+      { sessionId: "remote", cwd: "/incorrect/server/cwd" },
+    ]);
+    expect(store.active?.cwd).toBe("/workspace/.brokk/worktrees/keen-fox");
 
     const second = store.create({ id: "two", name: "Two" }, "/other");
     expect(store.get(first.localId)?.status).toBe("disconnected");

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     showWarningMessage: vi.fn(async () => undefined),
     showInputBox: vi.fn(async () => undefined),
     showQuickPick: vi.fn(async () => undefined),
+    executeCommand: vi.fn(async () => undefined),
     registerWebviewViewProvider: vi.fn(() => ({ dispose: vi.fn() })),
     spawn: vi.fn(),
     createInterface: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("vscode", () => {
   return {
     EventEmitter,
     ExtensionMode: { Production: 1, Development: 2, Test: 3 },
+    Uri: { file: (fsPath: string) => ({ fsPath }) },
     workspace: {
       workspaceFolders: [{ uri: { fsPath: "/workspace" } }],
       fs: { createDirectory: mocks.createDirectory },
@@ -67,6 +69,7 @@ vi.mock("vscode", () => {
       registerWebviewViewProvider: mocks.registerWebviewViewProvider,
     },
     commands: {
+      executeCommand: mocks.executeCommand,
       registerCommand: vi.fn((name: string, handler: (...args: unknown[]) => unknown) => {
         mocks.registeredCommands.set(name, handler);
         return { dispose: vi.fn() };
@@ -95,6 +98,7 @@ import {
   isRecord,
   isStringArray,
   isStringRecord,
+  parseWorktreeSelection,
   registryUrl,
   resolveAnvilExecutable,
   RustHost,
@@ -103,6 +107,12 @@ import {
   type HostSessionSelection,
   type LaunchSpec,
 } from "../src/extension";
+import type {
+  ResolvedWorkspace,
+  SessionWorktree,
+  WorktreeChoice,
+  WorktreeSelection,
+} from "../src/worktrees";
 
 function extensionContext(saved?: unknown) {
   const workspaceValues = new Map<string, unknown>();
@@ -144,7 +154,7 @@ function agent(overrides: Partial<AgentChoice> = {}): AgentChoice {
 
 class FakeHost {
   readonly sent: object[] = [];
-  readonly connected: Array<{ launch: LaunchSpec; session: HostSessionSelection }> = [];
+  readonly connected: Array<{ launch: LaunchSpec; session: HostSessionSelection; cwd: string }> = [];
   readonly installed: string[] = [];
   listCalls = 0;
   disconnectCalls = 0;
@@ -163,8 +173,8 @@ class FakeHost {
   async installAgent(id: string) {
     this.installed.push(id);
   }
-  connect(spec: LaunchSpec, session: HostSessionSelection) {
-    this.connected.push({ launch: spec, session });
+  connect(spec: LaunchSpec, session: HostSessionSelection, cwd = "/workspace") {
+    this.connected.push({ launch: spec, session, cwd });
   }
   send(command: object) {
     this.sent.push(command);
@@ -177,6 +187,67 @@ class FakeHost {
   }
   reconnectWithEnvironment(env: Record<string, string>) {
     this.reconnects.push(env);
+  }
+}
+
+class FakeWorktrees {
+  choices: WorktreeChoice[] = [];
+  resolveResult: ResolvedWorkspace | undefined;
+  dirty = false;
+  validationError: Error | undefined;
+  removalError: Error | undefined;
+  readonly resolved: Array<{ cwd: string; selection: WorktreeSelection }> = [];
+  readonly validated: Array<{ cwd: string; worktree?: SessionWorktree }> = [];
+  readonly removed: SessionWorktree[] = [];
+
+  async list(): Promise<WorktreeChoice[]> {
+    return this.choices;
+  }
+
+  async resolve(cwd: string, selection: WorktreeSelection): Promise<ResolvedWorkspace> {
+    this.resolved.push({ cwd, selection });
+    if (this.resolveResult) {
+      return this.resolveResult;
+    }
+    if (selection.kind === "existing") {
+      return {
+        cwd: selection.path,
+        created: false,
+        worktree: {
+          projectRoot: "/workspace",
+          worktreeRoot: selection.path,
+          name: "existing",
+          managed: false,
+        },
+      };
+    }
+    if (selection.kind === "create") {
+      return {
+        cwd: "/workspace/.brokk/worktrees/bright-fox",
+        created: true,
+        worktree: {
+          projectRoot: "/workspace",
+          worktreeRoot: "/workspace/.brokk/worktrees/bright-fox",
+          name: "bright-fox",
+          managed: true,
+        },
+      };
+    }
+    return { cwd, created: false };
+  }
+
+  async validate(cwd: string, worktree?: SessionWorktree): Promise<void> {
+    this.validated.push({ cwd, worktree });
+    if (this.validationError) throw this.validationError;
+  }
+
+  async isDirty(): Promise<boolean> {
+    return this.dirty;
+  }
+
+  async remove(worktree: SessionWorktree): Promise<void> {
+    this.removed.push(worktree);
+    if (this.removalError) throw this.removalError;
   }
 }
 
@@ -290,6 +361,22 @@ describe("extension validation helpers", () => {
     (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
     expect(() => workspacePath()).toThrow("Open a workspace");
   });
+
+  it("validates working-directory selections from the webview", () => {
+    expect(parseWorktreeSelection(undefined)).toEqual({ kind: "workspace" });
+    expect(parseWorktreeSelection({ kind: "workspace" })).toEqual({ kind: "workspace" });
+    expect(parseWorktreeSelection({ kind: "create" })).toEqual({ kind: "create" });
+    expect(parseWorktreeSelection({ kind: "existing", path: "/work/tree" })).toEqual({
+      kind: "existing",
+      path: "/work/tree",
+    });
+    expect(() => parseWorktreeSelection({ kind: "existing", path: "" })).toThrow(
+      "valid working directory",
+    );
+    expect(() => parseWorktreeSelection({ kind: "other" })).toThrow(
+      "valid working directory",
+    );
+  });
 });
 
 describe("AgentCatalog", () => {
@@ -370,13 +457,23 @@ describe("RustHost", () => {
 
     await host.listAgents();
     await host.installAgent("codex");
-    host.connect(launch(), { mode: "new" });
+    host.connect(launch(), { mode: "new" }, "/chosen/worktree");
     expect(mocks.createDirectory).toHaveBeenCalledWith(context.globalStorageUri);
     expect(mocks.spawn).toHaveBeenCalledTimes(1);
     expect(child.stdin.write).toHaveBeenCalledTimes(3);
+    expect(child.stdin.write).toHaveBeenCalledWith(
+      expect.stringContaining('"cwd":"/chosen/worktree"'),
+    );
 
     child.stderr.emit("data", Buffer.from("host log"));
     lines.emit("line", JSON.stringify({ type: "connected", agent: "Agent" }));
+    lines.emit(
+      "line",
+      JSON.stringify({ type: "terminal_auth", command: "agent", args: [], env: {} }),
+    );
+    expect(mocks.createTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/chosen/worktree" }),
+    );
     lines.emit("line", "not json");
     expect(events).toEqual(
       expect.arrayContaining([
@@ -495,7 +592,7 @@ describe("ChatView", () => {
     const host = new FakeHost();
     const choice = agent();
     const catalog = catalogWith(context, [choice]);
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
     expect(resolved.webview.options).toEqual({ enableScripts: true });
@@ -572,7 +669,7 @@ describe("ChatView", () => {
     });
     const catalog = catalogWith(context, [choice, registry]);
     const updateOfficial = vi.spyOn(catalog, "updateOfficial");
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
 
@@ -617,7 +714,7 @@ describe("ChatView", () => {
     const first = agent();
     const second = agent({ id: "custom:second", name: "Second", launch: launch("second") });
     const catalog = catalogWith(context, [first, second]);
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
     await chat.newSession(first.id);
@@ -697,7 +794,7 @@ describe("ChatView", () => {
     const host = new FakeHost();
     const choice = agent();
     const catalog = catalogWith(context, [choice]);
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
     await chat.newSession(choice.id);
@@ -733,7 +830,7 @@ describe("ChatView", () => {
     host.fire({ type: "terminal_auth" });
     host.fire({ type: "authenticated" });
 
-    mocks.showWarningMessage.mockResolvedValueOnce("Delete");
+    mocks.showWarningMessage.mockResolvedValueOnce("Delete session");
     const localId = (chat as never as { sessions: { active: { localId: string } } }).sessions.active
       .localId;
     await resolved.receive({ type: "delete_session", local_id: localId });
@@ -750,7 +847,12 @@ describe("ChatView", () => {
     const context = extensionContext();
     const host = new FakeHost();
     const choice = agent();
-    const chat = new ChatView(context, host as never, catalogWith(context, [choice]));
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      new FakeWorktrees(),
+    );
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
     await chat.newSession(choice.id);
@@ -792,7 +894,7 @@ describe("ChatView", () => {
     const host = new FakeHost();
     const choice = agent();
     const catalog = catalogWith(context, [choice]);
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
 
@@ -859,7 +961,7 @@ describe("ChatView", () => {
     });
     const choice = agent();
     const catalog = catalogWith(context, [choice, unavailable]);
-    const chat = new ChatView(context, host as never, catalog);
+    const chat = new ChatView(context, host as never, catalog, new FakeWorktrees());
     const resolved = fakeView();
     chat.resolveWebviewView(resolved.view);
     await chat.newSession(choice.id);
@@ -881,6 +983,156 @@ describe("ChatView", () => {
 
     await chat.newSession(choice.id);
     expect(host.sent.at(-1)).toEqual({ type: "new_session" });
+  });
+
+  it("routes each worktree through a distinct host connection and opens it in VS Code", async () => {
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const worktrees = new FakeWorktrees();
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      worktrees,
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+
+    await resolved.receive({
+      type: "new_session",
+      agent_id: choice.id,
+      working_directory: { kind: "create" },
+    });
+    expect(worktrees.resolved).toEqual([
+      { cwd: "/workspace", selection: { kind: "create" } },
+    ]);
+    expect(host.connected.at(-1)).toMatchObject({
+      cwd: "/workspace/.brokk/worktrees/bright-fox",
+      session: { mode: "new" },
+    });
+
+    host.fire({ type: "connecting", connection_id: 22 });
+    host.fire({ type: "connected", connection_id: 22, agent_capabilities: {} });
+    host.fire({ type: "session_started", session_id: "worktree-session", method: "new" });
+    await resolved.receive({ type: "open_worktree" });
+    expect(worktrees.validated.at(-1)?.cwd).toBe(
+      "/workspace/.brokk/worktrees/bright-fox",
+    );
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.openFolder",
+      { fsPath: "/workspace/.brokk/worktrees/bright-fox" },
+      { forceNewWindow: true },
+    );
+
+    await resolved.receive({ type: "show_start" });
+    await resolved.receive({
+      type: "new_session",
+      agent_id: choice.id,
+      working_directory: { kind: "existing", path: "/other/worktree" },
+    });
+    expect(host.disconnectCalls).toBe(1);
+    host.fire({ type: "disconnected", connection_id: 22 });
+    await vi.runAllTimersAsync();
+    expect(host.connected.at(-1)).toMatchObject({
+      cwd: "/other/worktree",
+      session: { mode: "new" },
+    });
+  });
+
+  it("offers safe managed-worktree cleanup only after ACP session deletion", async () => {
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const worktrees = new FakeWorktrees();
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      worktrees,
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+    await chat.newSession(choice.id, { kind: "create" });
+    host.fire({ type: "connecting", connection_id: 23 });
+    host.fire({ type: "connected", connection_id: 23, agent_capabilities: {} });
+    host.fire({ type: "session_started", session_id: "managed", method: "new" });
+
+    mocks.showWarningMessage.mockResolvedValueOnce("Delete + remove worktree");
+    const localId = (chat as never as { sessions: { active: { localId: string } } }).sessions.active
+      .localId;
+    await resolved.receive({ type: "delete_session", local_id: localId });
+    expect(host.sent.at(-1)).toEqual({ type: "delete_session", session_id: "managed" });
+    expect(worktrees.removed).toEqual([]);
+
+    host.fire({ type: "session_deleted", session_id: "managed" });
+    await vi.runAllTimersAsync();
+    expect(worktrees.removed).toEqual([
+      expect.objectContaining({ name: "bright-fox", managed: true }),
+    ]);
+  });
+
+  it("does not silently restore a session whose recorded worktree disappeared", async () => {
+    const savedWorktree: SessionWorktree = {
+      projectRoot: "/workspace",
+      worktreeRoot: "/workspace/.brokk/worktrees/gone",
+      name: "gone",
+      managed: true,
+    };
+    const saved = {
+      version: 1,
+      activeLocalId: "local",
+      sessions: [
+        {
+          localId: "local",
+          remoteId: "remote",
+          agentId: "custom:agent",
+          agentName: "Agent",
+          cwd: "/workspace/.brokk/worktrees/gone",
+          worktree: savedWorktree,
+          title: "Missing checkout",
+          createdAt: "2026-07-28T00:00:00.000Z",
+          updatedAt: "2026-07-28T00:00:00.000Z",
+          status: "ready",
+          entries: [],
+          configOptions: [],
+        },
+      ],
+    };
+    const context = extensionContext(saved);
+    const host = new FakeHost();
+    const worktrees = new FakeWorktrees();
+    worktrees.validationError = new Error("Session working directory is unavailable");
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [agent()]),
+      worktrees,
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+
+    await resolved.receive({ type: "ready" });
+    await Promise.resolve();
+    expect(host.connected).toEqual([]);
+    expect(
+      (resolved.posted.at(-1) as { state: { banner: string } }).state.banner,
+    ).toContain("relink this session");
+    expect(
+      (resolved.posted.at(-1) as {
+        state: { relinkSession: { localId: string; title: string } };
+      }).state.relinkSession,
+    ).toEqual({ localId: "local", title: "Missing checkout", agentId: "custom:agent" });
+
+    await resolved.receive({
+      type: "relink_session",
+      local_id: "local",
+      working_directory: { kind: "workspace" },
+    });
+    expect(host.connected.at(-1)).toMatchObject({
+      cwd: "/workspace",
+      session: { mode: "open", session_id: "remote", replay: true },
+    });
   });
 });
 

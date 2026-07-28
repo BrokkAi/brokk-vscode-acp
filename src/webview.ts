@@ -115,6 +115,10 @@ export function webviewHtml(webview: vscode.Webview): string {
       line-height: 1.1;
     }
     .brand-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .open-worktree {
+      flex: none;
+      font-size: 14px;
+    }
     .status-dot {
       width: 6px;
       height: 6px;
@@ -178,6 +182,14 @@ export function webviewHtml(webview: vscode.Webview): string {
       letter-spacing: .35px;
       text-transform: uppercase;
     }
+    .field-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    .field-heading .field-label { margin-bottom: 6px; }
     select {
       width: 100%;
       min-height: 34px;
@@ -194,6 +206,13 @@ export function webviewHtml(webview: vscode.Webview): string {
       margin: 8px 1px 13px;
       color: var(--vscode-descriptionForeground);
       font-size: 11.5px;
+    }
+    .workspace-description {
+      min-height: 30px;
+      margin: 7px 1px 12px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 10.5px;
+      overflow-wrap: anywhere;
     }
     .start-actions { display: flex; gap: 7px; }
     .start-actions .primary { flex: 1; }
@@ -1020,17 +1039,24 @@ export function webviewHtml(webview: vscode.Webview): string {
         <div id="top-title" class="brand-title">Brokk ACP</div>
         <div class="brand-meta"><i id="status-dot" class="status-dot"></i><span id="top-meta">Open agent coding</span></div>
       </div>
+      <button id="open-worktree" class="icon-button open-worktree hidden" title="Open worktree in a new VS Code window" aria-label="Open worktree in a new VS Code window">↗</button>
       <button id="new-button" class="icon-button" title="New session" aria-label="New session">＋</button>
     </header>
     <main class="main">
       <section id="empty" class="empty">
         <div class="start-card">
           <div class="mark">B</div>
-          <h1>Start an agent session</h1>
-          <p class="lede">Use Anvil, a custom server, or any agent from the official ACP registry.</p>
+          <h1 id="start-title">Start an agent session</h1>
+          <p id="start-lede" class="lede">Use Anvil, a custom server, or any agent from the official ACP registry.</p>
           <label class="field-label" for="agent">ACP agent</label>
           <select id="agent" aria-label="ACP agent"></select>
           <div id="agent-description" class="agent-description"></div>
+          <div class="field-heading">
+            <label class="field-label" for="working-directory">Working directory</label>
+            <button id="refresh-worktrees" class="text-button" title="Refresh Git worktrees">Refresh</button>
+          </div>
+          <select id="working-directory" aria-label="Working directory"></select>
+          <div id="workspace-description" class="workspace-description"></div>
           <div class="start-actions">
             <button id="start-button" class="primary">New session</button>
             <button id="browse-button" class="secondary" title="Connect and discover sessions from this agent">Sessions</button>
@@ -1097,6 +1123,8 @@ export function webviewHtml(webview: vscode.Webview): string {
     const vscode = acquireVsCodeApi();
     const elements = Object.fromEntries([
       'empty', 'session-view', 'top-title', 'top-meta', 'status-dot', 'agent', 'agent-description',
+      'working-directory', 'workspace-description', 'refresh-worktrees', 'open-worktree',
+      'start-title', 'start-lede',
       'install-row', 'start-button', 'browse-button', 'session-toolbar', 'config-summary',
       'config-button', 'config-panel', 'config-editor', 'plan-dock', 'transcript',
       'transcript-inner', 'composer', 'drop-overlay', 'prompt', 'composer-hint', 'send-button',
@@ -1115,11 +1143,23 @@ export function webviewHtml(webview: vscode.Webview): string {
     let attachmentError;
     let attachmentSessionId;
     let imageDragDepth = 0;
+    let workingDirectoryValue = 'workspace';
     const expandedEntries = new Set();
     const collapsedPlans = new Set();
 
     function selectedAgent() {
       return appState.agents.find(agent => agent.id === elements.agent.value);
+    }
+
+    function selectedWorkingDirectory() {
+      const value = elements['working-directory'].value;
+      if (value === 'create') return { kind: 'create' };
+      if (value.startsWith('existing:')) {
+        const index = Number(value.slice('existing:'.length));
+        const worktree = appState.worktrees?.[index];
+        if (worktree) return { kind: 'existing', path: worktree.path };
+      }
+      return { kind: 'workspace' };
     }
 
     function post(type, payload = {}) {
@@ -1163,9 +1203,24 @@ export function webviewHtml(webview: vscode.Webview): string {
       elements['top-title'].textContent = active ? active.title : 'Brokk ACP';
       const status = active?.status || appState.connection?.phase || 'idle';
       elements['top-meta'].textContent = active
-        ? active.agentName + ' · ' + statusLabel(status)
+        ? active.agentName + ' · ' + statusLabel(status) + (active.worktree ? ' · ' + active.worktree.name : '')
         : appState.connection?.phase === 'connecting' ? 'Connecting to agent' : 'Open agent coding';
       elements['status-dot'].className = 'status-dot ' + status;
+      elements['open-worktree'].classList.toggle('hidden', !active?.worktree);
+      elements['open-worktree'].title = active?.worktree
+        ? 'Open ' + active.worktree.name + ' in a new VS Code window'
+        : 'Open worktree in a new VS Code window';
+      elements['start-title'].textContent = appState.relinkSession
+        ? 'Relink saved session'
+        : 'Start an agent session';
+      elements['start-lede'].textContent = appState.relinkSession
+        ? 'Choose the checkout that should resume “' + appState.relinkSession.title + '”.'
+        : 'Use Anvil, a custom server, or any agent from the official ACP registry.';
+      elements['start-button'].textContent = appState.relinkSession
+        ? 'Relink and resume'
+        : 'New session';
+      elements['browse-button'].classList.toggle('hidden', Boolean(appState.relinkSession));
+      renderWorkingDirectoryPicker();
       renderAgentPicker();
       renderSessions();
       renderBanner();
@@ -1187,7 +1242,8 @@ export function webviewHtml(webview: vscode.Webview): string {
     }
 
     function renderAgentPicker() {
-      const current = appState.selectedAgent || elements.agent.value;
+      const current =
+        appState.relinkSession?.agentId || appState.selectedAgent || elements.agent.value;
       elements.agent.replaceChildren();
       for (const agent of appState.agents || []) {
         const option = document.createElement('option');
@@ -1206,8 +1262,59 @@ export function webviewHtml(webview: vscode.Webview): string {
         .filter(Boolean).join(' · ');
       elements['agent-description'].textContent = detail;
       elements['install-row'].classList.toggle('hidden', !agent.installable);
+      elements.agent.disabled = Boolean(appState.relinkSession);
       elements['start-button'].disabled = !agent.ready;
-      elements['browse-button'].disabled = !agent.ready;
+      elements['browse-button'].disabled =
+        !agent.ready || elements['working-directory'].value === 'create';
+    }
+
+    function renderWorkingDirectoryPicker() {
+      const picker = elements['working-directory'];
+      const current = workingDirectoryValue || picker.value || 'workspace';
+      picker.replaceChildren();
+
+      const workspace = document.createElement('option');
+      workspace.value = 'workspace';
+      workspace.textContent = 'Current workspace' + (appState.workspace?.name ? ' — ' + appState.workspace.name : '');
+      picker.appendChild(workspace);
+
+      if (!appState.worktreeError) {
+        const create = document.createElement('option');
+        create.value = 'create';
+        create.textContent = 'Create a new worktree';
+        picker.appendChild(create);
+      }
+
+      for (const [index, worktree] of (appState.worktrees || []).entries()) {
+        if (worktree.current) continue;
+        const option = document.createElement('option');
+        option.value = 'existing:' + index;
+        option.textContent =
+          'Use ' + worktree.name +
+          (worktree.branch ? ' — ' + worktree.branch : '') +
+          (worktree.managed ? ' · Brokk' : '');
+        picker.appendChild(option);
+      }
+
+      if (Array.from(picker.options).some(option => option.value === current)) {
+        picker.value = current;
+      } else {
+        picker.value = 'workspace';
+      }
+      workingDirectoryValue = picker.value;
+
+      const selected = selectedWorkingDirectory();
+      let description = appState.workspace?.path || '';
+      if (selected.kind === 'create') {
+        description = 'Creates a detached, named checkout under .brokk/worktrees and keeps this workspace untouched.';
+      } else if (selected.kind === 'existing') {
+        const worktree = (appState.worktrees || []).find(candidate => candidate.path === selected.path);
+        description = worktree?.path || selected.path;
+      }
+      if (appState.worktreeError) {
+        description += (description ? ' · ' : '') + appState.worktreeError;
+      }
+      elements['workspace-description'].textContent = description;
     }
 
     function renderSessions() {
@@ -1241,7 +1348,10 @@ export function webviewHtml(webview: vscode.Webview): string {
           title.textContent = session.title;
           const meta = document.createElement('div');
           meta.className = 'session-meta';
-          meta.textContent = session.agentName + ' · ' + relativeTime(session.updatedAt);
+          meta.textContent =
+            session.agentName +
+            (session.worktree ? ' · ' + session.worktree.name : '') +
+            ' · ' + relativeTime(session.updatedAt);
           copy.append(title, meta);
           row.appendChild(copy);
           if (session.remoteId && appState.connection?.agentId === session.agentId && appState.connection?.canDelete) {
@@ -2167,6 +2277,10 @@ export function webviewHtml(webview: vscode.Webview): string {
     elements['config-button'].onclick = () => setConfigOpen(!configOpen);
     document.getElementById('drawer-new').onclick = () => { setDrawer(false); post('show_start'); };
     document.getElementById('refresh-sessions').onclick = () => post('refresh_sessions');
+    elements['refresh-worktrees'].onclick = () => post('refresh_worktrees');
+    elements['open-worktree'].onclick = () => post('open_worktree', {
+      local_id: appState.active?.localId
+    });
     document.getElementById('install-button').onclick = () => {
       const agent = selectedAgent();
       if (agent) post('install', { agent_id: agent.id });
@@ -2176,15 +2290,34 @@ export function webviewHtml(webview: vscode.Webview): string {
       post('select_agent', { agent_id: elements.agent.value });
       renderAgentPicker();
     };
+    elements['working-directory'].onchange = () => {
+      workingDirectoryValue = elements['working-directory'].value;
+      renderWorkingDirectoryPicker();
+      renderAgentPicker();
+    };
     elements['start-button'].onclick = () => {
       const agent = selectedAgent();
-      if (agent) post('new_session', { agent_id: agent.id });
+      if (!agent) return;
+      if (appState.relinkSession) {
+        post('relink_session', {
+          local_id: appState.relinkSession.localId,
+          working_directory: selectedWorkingDirectory()
+        });
+      } else {
+        post('new_session', {
+          agent_id: agent.id,
+          working_directory: selectedWorkingDirectory()
+        });
+      }
     };
     elements['browse-button'].onclick = () => {
       const agent = selectedAgent();
       if (agent) {
         setDrawer(true);
-        post('browse_sessions', { agent_id: agent.id });
+        post('browse_sessions', {
+          agent_id: agent.id,
+          working_directory: selectedWorkingDirectory()
+        });
       }
     };
     elements['send-button'].onclick = submitPrompt;

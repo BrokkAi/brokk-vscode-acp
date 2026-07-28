@@ -7,6 +7,13 @@ import * as vscode from "vscode";
 import { normalizePromptImages } from "./images";
 import { SessionRecord, SessionStore } from "./sessionStore";
 import { webviewHtml } from "./webview";
+import {
+  GitWorktreeService,
+  type SessionWorktree,
+  type WorktreeChoice,
+  type WorktreeSelection,
+  type WorktreeService,
+} from "./worktrees";
 
 type HostEvent = { type: string; [key: string]: unknown };
 
@@ -204,8 +211,9 @@ export class RustHost implements vscode.Disposable {
   private child: ChildProcessWithoutNullStreams | undefined;
   private currentLaunch: LaunchSpec | undefined;
   private currentSession: HostSessionSelection = { mode: "browse" };
+  private currentCwd: string | undefined;
   private pendingReconnect:
-    | { launch: LaunchSpec; session: HostSessionSelection }
+    | { launch: LaunchSpec; session: HostSessionSelection; cwd: string }
     | undefined;
   private readonly events = new vscode.EventEmitter<HostEvent>();
   private readonly output = vscode.window.createOutputChannel("Brokk ACP");
@@ -232,15 +240,16 @@ export class RustHost implements vscode.Disposable {
     });
   }
 
-  connect(launch: LaunchSpec, session: HostSessionSelection): void {
+  connect(launch: LaunchSpec, session: HostSessionSelection, cwd = workspacePath()): void {
     this.currentLaunch = launch;
     this.currentSession = session;
+    this.currentCwd = cwd;
     this.send({
       type: "connect",
       command: launch.command,
       args: launch.args,
       env: launch.env,
-      cwd: workspacePath(),
+      cwd,
       session,
     });
   }
@@ -265,6 +274,7 @@ export class RustHost implements vscode.Disposable {
         env: { ...this.currentLaunch.env, ...env },
       },
       session: this.currentSession,
+      cwd: this.currentCwd ?? workspacePath(),
     };
     this.disconnectSession();
   }
@@ -328,7 +338,7 @@ export class RustHost implements vscode.Disposable {
         if (event.type === "disconnected" && this.pendingReconnect) {
           const pending = this.pendingReconnect;
           this.pendingReconnect = undefined;
-          setImmediate(() => this.connect(pending.launch, pending.session));
+          setImmediate(() => this.connect(pending.launch, pending.session, pending.cwd));
         }
       } catch {
         this.events.fire({ type: "error", message: `Invalid host output: ${line}` });
@@ -353,7 +363,7 @@ export class RustHost implements vscode.Disposable {
       shellPath: command,
       shellArgs: args,
       env,
-      cwd: workspacePath(),
+      cwd: this.currentCwd ?? workspacePath(),
     });
     terminal.show();
   }
@@ -376,6 +386,8 @@ export class RustHost implements vscode.Disposable {
 interface PendingConnection {
   agent: AgentChoice;
   selection: HostSessionSelection;
+  cwd: string;
+  worktree?: SessionWorktree;
 }
 
 export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -386,18 +398,25 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
   private connectionPhase: "idle" | "connecting" | "connected" = "idle";
   private activeConnectionId: number | undefined;
   private connectedAgentId: string | undefined;
+  private connectedCwd: string | undefined;
+  private connectedWorktree: SessionWorktree | undefined;
   private pendingConnection: PendingConnection | undefined;
+  private readonly pendingWorktreeCleanup = new Map<string, SessionWorktree>();
+  private worktreeChoices: WorktreeChoice[] = [];
+  private worktreeError: string | undefined;
   private connectionDetail: string | undefined;
   private capabilities: Record<string, unknown> | undefined;
   private auth: { message?: string; methods: unknown[] } | undefined;
   private banner: string | undefined;
   private showStart = false;
   private restorePending = true;
+  private relinkLocalId: string | undefined;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly host: RustHost,
     private readonly catalog: AgentCatalog,
+    private readonly worktrees: WorktreeService,
   ) {
     this.sessions = new SessionStore(context);
     this.subscription = host.onEvent((event) => this.handleHostEvent(event));
@@ -414,7 +433,10 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     this.subscription.dispose();
   }
 
-  async newSession(agentId?: string): Promise<void> {
+  async newSession(
+    agentId?: string,
+    worktreeSelection: WorktreeSelection = { kind: "workspace" },
+  ): Promise<void> {
     const agent = this.catalog.get(agentId || this.catalog.defaultAgentId());
     if (!agent?.launch) {
       throw new Error("Choose an installed ACP agent.");
@@ -423,9 +445,23 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       throw new Error("Stop the active turn before starting another session.");
     }
     await this.catalog.select(agent.id);
-    this.sessions.create({ id: agent.id, name: agent.name }, workspacePath());
+    const selectedWorkspace = await this.worktrees.resolve(workspacePath(), worktreeSelection);
+    this.sessions.create(
+      { id: agent.id, name: agent.name },
+      selectedWorkspace.cwd,
+      selectedWorkspace.worktree,
+    );
+    this.relinkLocalId = undefined;
     this.showStart = false;
-    this.startConnection(agent, { mode: "new" });
+    this.startConnection(
+      agent,
+      { mode: "new" },
+      selectedWorkspace.cwd,
+      selectedWorkspace.worktree,
+    );
+    if (selectedWorkspace.created) {
+      void this.refreshWorktrees().then(() => this.postState());
+    }
   }
 
   private handleHostEvent(event: HostEvent): void {
@@ -446,7 +482,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     switch (event.type) {
       case "catalog":
         this.catalog.updateOfficial(event.agents);
-        this.restoreActiveSession();
+        void this.restoreActiveSession();
         break;
       case "catalog_loading":
         break;
@@ -485,8 +521,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         if (agent) {
           this.sessions.mergeRemoteSessions(
             { id: agent.id, name: agent.name },
-            workspacePath(),
+            this.connectedCwd ?? workspacePath(),
             event.sessions,
+            this.connectedWorktree,
           );
         }
         break;
@@ -516,6 +553,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         this.auth = undefined;
         this.banner = undefined;
         this.showStart = false;
+        this.relinkLocalId = undefined;
         break;
       case "turn_started":
         this.sessions.turnStarted();
@@ -561,6 +599,11 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       case "session_deleted":
         if (this.connectedAgentId && typeof event.session_id === "string") {
           this.sessions.removeByRemoteId(this.connectedAgentId, event.session_id);
+          const cleanup = this.pendingWorktreeCleanup.get(event.session_id);
+          this.pendingWorktreeCleanup.delete(event.session_id);
+          if (cleanup) {
+            void this.finishWorktreeCleanup(cleanup);
+          }
         }
         break;
       case "error": {
@@ -583,13 +626,22 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         if (this.pendingConnection) {
           const pending = this.pendingConnection;
           this.pendingConnection = undefined;
-          setImmediate(() => this.launchConnection(pending.agent, pending.selection));
+          setImmediate(() =>
+            this.launchConnection(
+              pending.agent,
+              pending.selection,
+              pending.cwd,
+              pending.worktree,
+            ),
+          );
         }
         break;
       case "host_exited":
         this.connectionPhase = "idle";
         this.activeConnectionId = undefined;
         this.connectedAgentId = undefined;
+        this.connectedCwd = undefined;
+        this.connectedWorktree = undefined;
         this.connectionDetail = undefined;
         this.sessions.disconnected();
         this.banner = "The Brokk ACP host exited.";
@@ -607,7 +659,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         case "ready":
           this.postState();
           await this.host.listAgents();
-          this.restoreActiveSession();
+          await this.refreshWorktrees();
+          this.postState();
+          void this.restoreActiveSession();
           break;
         case "select_agent":
           if (typeof message.agent_id === "string") {
@@ -623,20 +677,47 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
             throw new Error("Stop the active turn before leaving this session.");
           }
           this.showStart = true;
+          this.relinkLocalId = undefined;
           this.banner = undefined;
+          await this.refreshWorktrees();
+          this.postState();
+          break;
+        case "refresh_worktrees":
+          await this.refreshWorktrees();
           this.postState();
           break;
         case "new_session":
           if (typeof message.agent_id === "string") {
-            await this.newSession(message.agent_id);
+            await this.newSession(
+              message.agent_id,
+              parseWorktreeSelection(message.working_directory),
+            );
+          }
+          break;
+        case "relink_session":
+          if (typeof message.local_id === "string") {
+            await this.relinkSession(
+              message.local_id,
+              parseWorktreeSelection(message.working_directory),
+            );
           }
           break;
         case "browse_sessions":
           if (typeof message.agent_id === "string") {
             const agent = this.requireLaunchableAgent(message.agent_id);
             await this.catalog.select(agent.id);
+            const selection = parseWorktreeSelection(message.working_directory);
+            if (selection.kind === "create") {
+              throw new Error("Create the worktree by starting a new session first.");
+            }
+            const selectedWorkspace = await this.worktrees.resolve(workspacePath(), selection);
             this.showStart = true;
-            this.startConnection(agent, { mode: "browse" });
+            this.startConnection(
+              agent,
+              { mode: "browse" },
+              selectedWorkspace.cwd,
+              selectedWorkspace.worktree,
+            );
           }
           break;
         case "open_session":
@@ -649,7 +730,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
             this.host.send({ type: "refresh_sessions" });
           } else {
             const agent = this.requireLaunchableAgent(this.catalog.defaultAgentId());
-            this.startConnection(agent, { mode: "browse" });
+            this.startConnection(agent, { mode: "browse" }, workspacePath());
           }
           break;
         case "delete_session":
@@ -657,6 +738,21 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
             await this.deleteSession(message.local_id);
           }
           break;
+        case "open_worktree": {
+          const session =
+            typeof message.local_id === "string"
+              ? this.sessions.get(message.local_id)
+              : this.sessions.active;
+          if (session?.worktree) {
+            await this.worktrees.validate(session.cwd, session.worktree);
+            await vscode.commands.executeCommand(
+              "vscode.openFolder",
+              vscode.Uri.file(session.cwd),
+              { forceNewWindow: true },
+            );
+          }
+          break;
+        }
         case "prompt":
           {
             const text = typeof message.text === "string" ? message.text.trim() : "";
@@ -729,12 +825,18 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     }
   }
 
-  private startConnection(agent: AgentChoice, selection: HostSessionSelection): void {
+  private startConnection(
+    agent: AgentChoice,
+    selection: HostSessionSelection,
+    cwd: string,
+    worktree?: SessionWorktree,
+  ): void {
     if (!agent.launch) {
       throw new Error("Install this ACP agent before connecting.");
     }
     const sameAgent = this.connectedAgentId === agent.id;
-    if (this.connectionPhase === "connected" && sameAgent) {
+    const sameWorkspace = this.connectedCwd !== undefined && samePath(this.connectedCwd, cwd);
+    if (this.connectionPhase === "connected" && sameAgent && sameWorkspace) {
       this.connectionDetail =
         selection.mode === "new"
           ? "Creating a new session…"
@@ -756,16 +858,18 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     if (this.connectionPhase !== "idle") {
-      this.pendingConnection = { agent, selection };
-      this.connectionDetail = `Switching to ${agent.name}…`;
+      this.pendingConnection = { agent, selection, cwd, worktree };
+      this.connectionDetail = sameAgent
+        ? "Switching working directories…"
+        : `Switching to ${agent.name}…`;
       this.host.disconnectSession();
       this.postState();
       return;
     }
-    this.launchConnection(agent, selection);
+    this.launchConnection(agent, selection, cwd, worktree);
   }
 
-  private restoreActiveSession(): void {
+  private async restoreActiveSession(): Promise<void> {
     if (!this.restorePending || this.connectionPhase !== "idle") {
       return;
     }
@@ -779,24 +883,42 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     this.restorePending = false;
+    try {
+      await this.worktrees.validate(session.cwd, session.worktree);
+    } catch (error) {
+      this.beginRelink(session, error);
+      return;
+    }
     this.sessions.activate(session.localId, true);
-    this.startConnection(agent, {
-      mode: "open",
-      session_id: session.remoteId,
-      replay: true,
-    });
+    this.startConnection(
+      agent,
+      {
+        mode: "open",
+        session_id: session.remoteId,
+        replay: true,
+      },
+      session.cwd,
+      session.worktree,
+    );
   }
 
-  private launchConnection(agent: AgentChoice, selection: HostSessionSelection): void {
+  private launchConnection(
+    agent: AgentChoice,
+    selection: HostSessionSelection,
+    cwd: string,
+    worktree?: SessionWorktree,
+  ): void {
     if (!agent.launch) {
       throw new Error("Install this ACP agent before connecting.");
     }
     this.connectionPhase = "connecting";
     this.connectedAgentId = agent.id;
+    this.connectedCwd = cwd;
+    this.connectedWorktree = worktree;
     this.connectionDetail = `Starting ${agent.name}…`;
     this.capabilities = undefined;
     this.banner = undefined;
-    this.host.connect(agent.launch, selection);
+    this.host.connect(agent.launch, selection, cwd);
     this.postState();
   }
 
@@ -813,12 +935,67 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       return;
     }
     const agent = this.requireLaunchableAgent(session.agentId);
+    try {
+      await this.worktrees.validate(session.cwd, session.worktree);
+    } catch (error) {
+      this.beginRelink(session, error);
+      return;
+    }
+    this.relinkLocalId = undefined;
     this.sessions.activate(localId, true);
-    this.startConnection(agent, {
-      mode: "open",
-      session_id: session.remoteId,
-      replay: true,
-    });
+    this.startConnection(
+      agent,
+      {
+        mode: "open",
+        session_id: session.remoteId,
+        replay: true,
+      },
+      session.cwd,
+      session.worktree,
+    );
+  }
+
+  private async relinkSession(
+    localId: string,
+    selection: WorktreeSelection,
+  ): Promise<void> {
+    const session = this.sessions.get(localId);
+    if (!session?.remoteId) {
+      throw new Error("This saved ACP session can no longer be resumed.");
+    }
+    const selectedWorkspace = await this.worktrees.resolve(workspacePath(), selection);
+    this.sessions.setWorkspace(
+      localId,
+      selectedWorkspace.cwd,
+      selectedWorkspace.worktree,
+    );
+    const agent = this.requireLaunchableAgent(session.agentId);
+    this.sessions.activate(localId, true);
+    this.relinkLocalId = undefined;
+    this.showStart = false;
+    this.startConnection(
+      agent,
+      {
+        mode: "open",
+        session_id: session.remoteId,
+        replay: true,
+      },
+      selectedWorkspace.cwd,
+      selectedWorkspace.worktree,
+    );
+    if (selectedWorkspace.created) {
+      void this.refreshWorktrees().then(() => this.postState());
+    }
+  }
+
+  private beginRelink(session: SessionRecord, error: unknown): void {
+    this.showStart = true;
+    this.relinkLocalId = session.localId;
+    this.banner =
+      error instanceof Error
+        ? `${error.message} Choose a working directory below to relink this session.`
+        : "The recorded session working directory is unavailable. Choose a replacement below.";
+    this.postState();
   }
 
   private async deleteSession(localId: string): Promise<void> {
@@ -832,13 +1009,72 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
     ) {
       throw new Error("Connect to this session's agent before deleting it.");
     }
-    const answer = await vscode.window.showWarningMessage(
-      `Delete “${session.title}” from ${session.agentName}?`,
-      { modal: true },
-      "Delete",
-    );
-    if (answer === "Delete") {
+    let answer: string | undefined;
+    if (session.worktree?.managed) {
+      const shared = this.sessions.hasOtherSessionInWorktree(
+        session.localId,
+        session.worktree.worktreeRoot,
+      );
+      if (shared) {
+        answer = await vscode.window.showWarningMessage(
+          `Delete “${session.title}”? Its worktree is used by another saved session and will be kept.`,
+          { modal: true },
+          "Delete session",
+        );
+      } else {
+        const dirty = await this.worktrees.isDirty(session.worktree);
+        if (dirty) {
+          answer = await vscode.window.showWarningMessage(
+            `Delete “${session.title}”? Its worktree has uncommitted changes and will be kept at ${session.worktree.worktreeRoot}.`,
+            { modal: true },
+            "Delete session",
+          );
+        } else {
+          answer = await vscode.window.showWarningMessage(
+            `Delete “${session.title}”? You can also remove its clean Brokk worktree.`,
+            { modal: true },
+            "Delete + remove worktree",
+            "Delete session",
+          );
+        }
+      }
+    } else {
+      answer = await vscode.window.showWarningMessage(
+        `Delete “${session.title}” from ${session.agentName}?`,
+        { modal: true },
+        "Delete session",
+      );
+    }
+    if (answer === "Delete + remove worktree" && session.worktree) {
+      this.pendingWorktreeCleanup.set(session.remoteId, session.worktree);
+    }
+    if (answer === "Delete session" || answer === "Delete + remove worktree") {
       this.host.send({ type: "delete_session", session_id: session.remoteId });
+    }
+  }
+
+  private async finishWorktreeCleanup(worktree: SessionWorktree): Promise<void> {
+    try {
+      await this.worktrees.remove(worktree);
+      this.banner = `Removed clean worktree ${worktree.name}.`;
+      await this.refreshWorktrees();
+    } catch (error) {
+      this.banner =
+        error instanceof Error
+          ? error.message
+          : `Could not remove worktree ${worktree.name}.`;
+    }
+    this.postState();
+  }
+
+  private async refreshWorktrees(): Promise<void> {
+    try {
+      this.worktreeChoices = await this.worktrees.list(workspacePath());
+      this.worktreeError = undefined;
+    } catch (error) {
+      this.worktreeChoices = [];
+      this.worktreeError =
+        error instanceof Error ? error.message : "Git worktrees are unavailable.";
     }
   }
 
@@ -869,6 +1105,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
 
   private postState(): void {
     const sessionState = this.sessions.snapshot();
+    const relinkSession = this.relinkLocalId
+      ? this.sessions.get(this.relinkLocalId)
+      : undefined;
     const sessionCapabilities = isRecord(this.capabilities?.sessionCapabilities)
       ? this.capabilities.sessionCapabilities
       : undefined;
@@ -889,6 +1128,19 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         },
         auth: this.auth,
         banner: this.banner,
+        workspace: {
+          path: workspacePath(),
+          name: path.basename(workspacePath()),
+        },
+        worktrees: this.worktreeChoices,
+        worktreeError: this.worktreeError,
+        relinkSession: relinkSession
+          ? {
+              localId: relinkSession.localId,
+              title: relinkSession.title,
+              agentId: relinkSession.agentId,
+            }
+          : undefined,
       },
     });
   }
@@ -932,7 +1184,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
 export function activate(context: vscode.ExtensionContext): void {
   const catalog = new AgentCatalog(context);
   const host = new RustHost(context);
-  const chat = new ChatView(context, host, catalog);
+  const chat = new ChatView(context, host, catalog, new GitWorktreeService());
   context.subscriptions.push(
     host,
     chat,
@@ -1046,4 +1298,21 @@ export function isEnvAuthMethod(value: unknown): value is EnvAuthMethod {
       (variable.secret === undefined || typeof variable.secret === "boolean") &&
       (variable.optional === undefined || typeof variable.optional === "boolean"),
   );
+}
+
+export function parseWorktreeSelection(value: unknown): WorktreeSelection {
+  if (!isRecord(value) || value.kind === "workspace") {
+    return { kind: "workspace" };
+  }
+  if (value.kind === "create") {
+    return { kind: "create" };
+  }
+  if (value.kind === "existing" && typeof value.path === "string" && value.path.trim()) {
+    return { kind: "existing", path: value.path };
+  }
+  throw new Error("Choose a valid working directory.");
+}
+
+function samePath(left: string, right: string): boolean {
+  return path.resolve(left) === path.resolve(right);
 }

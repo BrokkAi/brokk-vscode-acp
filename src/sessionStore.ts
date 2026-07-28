@@ -5,6 +5,7 @@ import {
   normalizePlanEntries,
   type SessionPlanEntry,
 } from "./plans";
+import type { SessionWorktree } from "./worktrees";
 
 export type SessionStatus =
   | "connecting"
@@ -58,6 +59,7 @@ export interface SessionRecord {
   availableCommands?: unknown[];
   currentModeId?: string;
   currentPlan?: SessionPlanEntry[];
+  worktree?: SessionWorktree;
 }
 
 export interface SessionSummary {
@@ -65,6 +67,8 @@ export interface SessionSummary {
   remoteId?: string;
   agentId: string;
   agentName: string;
+  cwd: string;
+  worktree?: SessionWorktree;
   title: string;
   updatedAt: string;
   status: SessionStatus;
@@ -124,7 +128,25 @@ export class SessionStore {
     return this.sessions.get(localId);
   }
 
-  create(agent: AgentIdentity, cwd: string): SessionRecord {
+  setWorkspace(localId: string, cwd: string, worktree?: SessionWorktree): SessionRecord | undefined {
+    const session = this.sessions.get(localId);
+    if (!session) {
+      return undefined;
+    }
+    session.cwd = cwd;
+    session.worktree = worktree;
+    this.touch(session);
+    return session;
+  }
+
+  hasOtherSessionInWorktree(localId: string, worktreeRoot: string): boolean {
+    return [...this.sessions.values()].some(
+      (session) =>
+        session.localId !== localId && session.worktree?.worktreeRoot === worktreeRoot,
+    );
+  }
+
+  create(agent: AgentIdentity, cwd: string, worktree?: SessionWorktree): SessionRecord {
     const now = new Date().toISOString();
     const session: SessionRecord = {
       localId: randomUUID(),
@@ -137,6 +159,7 @@ export class SessionStore {
       status: "connecting",
       entries: [],
       configOptions: [],
+      worktree,
     };
     this.sessions.set(session.localId, session);
     this.activate(session.localId);
@@ -223,7 +246,12 @@ export class SessionStore {
     this.touch(active);
   }
 
-  mergeRemoteSessions(agent: AgentIdentity, cwd: string, values: unknown): void {
+  mergeRemoteSessions(
+    agent: AgentIdentity,
+    cwd: string,
+    values: unknown,
+    worktree?: SessionWorktree,
+  ): void {
     if (!Array.isArray(values)) {
       return;
     }
@@ -243,7 +271,12 @@ export class SessionStore {
       if (existing) {
         existing.title = title;
         existing.updatedAt = updatedAt;
-        existing.cwd = typeof value.cwd === "string" ? value.cwd : existing.cwd;
+        if (worktree) {
+          existing.cwd = cwd;
+          existing.worktree = worktree;
+        } else if (!existing.worktree && typeof value.cwd === "string") {
+          existing.cwd = value.cwd;
+        }
         continue;
       }
       const localId = randomUUID();
@@ -252,7 +285,8 @@ export class SessionStore {
         remoteId: value.sessionId,
         agentId: agent.id,
         agentName: agent.name,
-        cwd: typeof value.cwd === "string" ? value.cwd : cwd,
+        cwd: worktree ? cwd : typeof value.cwd === "string" ? value.cwd : cwd,
+        worktree,
         title,
         createdAt: updatedAt,
         updatedAt,
@@ -463,6 +497,8 @@ export class SessionStore {
         remoteId: session.remoteId,
         agentId: session.agentId,
         agentName: session.agentName,
+        cwd: session.cwd,
+        worktree: session.worktree,
         title: session.title,
         updatedAt: session.updatedAt,
         status: session.status,
@@ -627,7 +663,18 @@ function isSessionRecord(value: unknown): value is SessionRecord {
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string" &&
     Array.isArray(value.entries) &&
-    Array.isArray(value.configOptions)
+    Array.isArray(value.configOptions) &&
+    (value.worktree === undefined || isSessionWorktree(value.worktree))
+  );
+}
+
+function isSessionWorktree(value: unknown): value is SessionWorktree {
+  return (
+    isRecord(value) &&
+    typeof value.projectRoot === "string" &&
+    typeof value.worktreeRoot === "string" &&
+    typeof value.name === "string" &&
+    typeof value.managed === "boolean"
   );
 }
 
