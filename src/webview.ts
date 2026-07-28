@@ -1146,7 +1146,7 @@ export function webviewHtml(webview: vscode.Webview): string {
     let attachmentError;
     let attachmentSessionId;
     let imageDragDepth = 0;
-    let workingDirectoryValue = 'workspace';
+    let workingDirectoryValue = 'create';
     const expandedEntries = new Set();
     const collapsedPlans = new Set();
 
@@ -1278,13 +1278,16 @@ export function webviewHtml(webview: vscode.Webview): string {
 
       const workspace = document.createElement('option');
       workspace.value = 'workspace';
-      workspace.textContent = 'Current workspace' + (appState.workspace?.name ? ' — ' + appState.workspace.name : '');
+      workspace.textContent =
+        'Use current workspace' +
+        (appState.workspace?.name ? ' — ' + appState.workspace.name : '') +
+        ' · shared checkout';
       picker.appendChild(workspace);
 
       if (!appState.worktreeError) {
         const create = document.createElement('option');
         create.value = 'create';
-        create.textContent = 'Create a new worktree';
+        create.textContent = 'Create an isolated worktree — recommended';
         picker.appendChild(create);
       }
 
@@ -1309,15 +1312,29 @@ export function webviewHtml(webview: vscode.Webview): string {
       const selected = selectedWorkingDirectory();
       let description = appState.workspace?.path || '';
       if (selected.kind === 'create') {
-        description = 'Creates a detached, named checkout under .brokk/worktrees and keeps this workspace untouched.';
+        description =
+          'Creates a detached checkout under .brokk/worktrees, runs the agent there, ' +
+          'and opens the same folder in a new VS Code window.';
       } else if (selected.kind === 'existing') {
         const worktree = (appState.worktrees || []).find(candidate => candidate.path === selected.path);
-        description = worktree?.path || selected.path;
+        description =
+          (worktree?.path || selected.path) +
+          ' · The agent runs there and VS Code opens the same folder in a new window.';
+      } else {
+        description += ' · No worktree; the agent edits this shared checkout.';
       }
       if (appState.worktreeError) {
         description += (description ? ' · ' : '') + appState.worktreeError;
       }
       elements['workspace-description'].textContent = description;
+      if (!appState.relinkSession) {
+        elements['start-button'].textContent =
+          selected.kind === 'create'
+            ? 'Create worktree and start'
+            : selected.kind === 'existing'
+              ? 'Open worktree and start'
+              : 'Start in shared workspace';
+      }
     }
 
     function renderSessions() {

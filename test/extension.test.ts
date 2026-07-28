@@ -1011,10 +1011,16 @@ describe("ChatView", () => {
       cwd: "/workspace/.brokk/worktrees/bright-fox",
       session: { mode: "new" },
     });
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.openFolder",
+      { fsPath: "/workspace/.brokk/worktrees/bright-fox" },
+      { forceNewWindow: true },
+    );
 
     host.fire({ type: "connecting", connection_id: 22 });
     host.fire({ type: "connected", connection_id: 22, agent_capabilities: {} });
     host.fire({ type: "session_started", session_id: "worktree-session", method: "new" });
+    mocks.executeCommand.mockClear();
     await resolved.receive({ type: "open_worktree" });
     expect(worktrees.validated.at(-1)?.cwd).toBe(
       "/workspace/.brokk/worktrees/bright-fox",
@@ -1038,6 +1044,39 @@ describe("ChatView", () => {
       cwd: "/other/worktree",
       session: { mode: "new" },
     });
+    expect(mocks.executeCommand).toHaveBeenCalledWith(
+      "vscode.openFolder",
+      { fsPath: "/other/worktree" },
+      { forceNewWindow: true },
+    );
+  });
+
+  it("keeps the worktree agent connection when VS Code cannot open the checkout", async () => {
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const chat = new ChatView(
+      context,
+      host as never,
+      catalogWith(context, [choice]),
+      new FakeWorktrees(),
+    );
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+    mocks.executeCommand.mockRejectedValueOnce(new Error("window blocked"));
+
+    await chat.newSession(choice.id, { kind: "create" });
+    await Promise.resolve();
+
+    expect(host.connected.at(-1)?.cwd).toBe(
+      "/workspace/.brokk/worktrees/bright-fox",
+    );
+    expect(
+      (resolved.posted.at(-1) as { state: { banner: string } }).state.banner,
+    ).toContain("agent is running in bright-fox");
+    expect(
+      (resolved.posted.at(-1) as { state: { banner: string } }).state.banner,
+    ).toContain("window blocked");
   });
 
   it("offers safe managed-worktree cleanup only after ACP session deletion", async () => {
@@ -1149,5 +1188,12 @@ describe("activate", () => {
     expect(mocks.registeredCommands.has("brokkAcp.disconnect")).toBe(true);
     expect(mocks.registeredCommands.has("brokkAcp.refreshAgents")).toBe(true);
     expect(context.subscriptions.length).toBe(6);
+
+    await mocks.registeredCommands.get("brokkAcp.connect")?.();
+    expect(mocks.executeCommand).toHaveBeenCalledWith("brokkAcp.chat.focus");
+    expect(context.workspaceState.update).toHaveBeenCalledWith(
+      "brokkAcp.selectedAgent",
+      "bundled:anvil",
+    );
   });
 });

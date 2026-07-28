@@ -459,9 +459,26 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       selectedWorkspace.cwd,
       selectedWorkspace.worktree,
     );
+    if (selectedWorkspace.worktree) {
+      this.openWorktreeAutomatically(selectedWorkspace.cwd, selectedWorkspace.worktree);
+    }
     if (selectedWorkspace.created) {
       void this.refreshWorktrees().then(() => this.postState());
     }
+  }
+
+  async showNewSession(agentId?: string): Promise<void> {
+    if (this.sessions.active?.status === "running") {
+      throw new Error("Stop the active turn before leaving this session.");
+    }
+    if (agentId) {
+      await this.catalog.select(agentId);
+    }
+    this.showStart = true;
+    this.relinkLocalId = undefined;
+    this.banner = undefined;
+    await this.refreshWorktrees();
+    this.postState();
   }
 
   private handleHostEvent(event: HostEvent): void {
@@ -673,14 +690,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
           await this.installAgent(message.agent_id);
           break;
         case "show_start":
-          if (this.sessions.active?.status === "running") {
-            throw new Error("Stop the active turn before leaving this session.");
-          }
-          this.showStart = true;
-          this.relinkLocalId = undefined;
-          this.banner = undefined;
-          await this.refreshWorktrees();
-          this.postState();
+          await this.showNewSession();
           break;
         case "refresh_worktrees":
           await this.refreshWorktrees();
@@ -745,11 +755,7 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
               : this.sessions.active;
           if (session?.worktree) {
             await this.worktrees.validate(session.cwd, session.worktree);
-            await vscode.commands.executeCommand(
-              "vscode.openFolder",
-              vscode.Uri.file(session.cwd),
-              { forceNewWindow: true },
-            );
+            await this.openWorktreeInVsCode(session.cwd);
           }
           break;
         }
@@ -953,6 +959,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       session.cwd,
       session.worktree,
     );
+    if (session.worktree) {
+      this.openWorktreeAutomatically(session.cwd, session.worktree);
+    }
   }
 
   private async relinkSession(
@@ -983,6 +992,9 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
       selectedWorkspace.cwd,
       selectedWorkspace.worktree,
     );
+    if (selectedWorkspace.worktree) {
+      this.openWorktreeAutomatically(selectedWorkspace.cwd, selectedWorkspace.worktree);
+    }
     if (selectedWorkspace.created) {
       void this.refreshWorktrees().then(() => this.postState());
     }
@@ -996,6 +1008,24 @@ export class ChatView implements vscode.WebviewViewProvider, vscode.Disposable {
         ? `${error.message} Choose a working directory below to relink this session.`
         : "The recorded session working directory is unavailable. Choose a replacement below.";
     this.postState();
+  }
+
+  private async openWorktreeInVsCode(cwd: string): Promise<void> {
+    await vscode.commands.executeCommand(
+      "vscode.openFolder",
+      vscode.Uri.file(cwd),
+      { forceNewWindow: true },
+    );
+  }
+
+  private openWorktreeAutomatically(cwd: string, worktree: SessionWorktree): void {
+    void this.openWorktreeInVsCode(cwd).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.banner =
+        `The agent is running in ${worktree.name}, but VS Code could not open ` +
+        `that checkout automatically: ${detail}`;
+      this.postState();
+    });
   }
 
   private async deleteSession(localId: string): Promise<void> {
@@ -1200,7 +1230,8 @@ export function activate(context: vscode.ExtensionContext): void {
         { placeHolder: "Choose an ACP agent for a new session" },
       );
       if (picked) {
-        await chat.newSession(picked.agent.id);
+        await chat.showNewSession(picked.agent.id);
+        await vscode.commands.executeCommand("brokkAcp.chat.focus");
       }
     }),
     vscode.commands.registerCommand("brokkAcp.disconnect", () => host.disconnectSession()),
