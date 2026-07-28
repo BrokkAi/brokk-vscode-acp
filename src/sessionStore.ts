@@ -13,6 +13,12 @@ export type SessionStatus =
   | "disconnected"
   | "error";
 
+export interface TranscriptAttachment {
+  type: "image";
+  name: string;
+  mimeType: string;
+}
+
 export interface TranscriptEntry {
   id: string;
   kind: "user" | "assistant" | "thought" | "tool" | "plan" | "permission" | "notice" | "error";
@@ -30,6 +36,7 @@ export interface TranscriptEntry {
   requestId?: string;
   options?: unknown[];
   resolvedOptionId?: string | null;
+  attachments?: TranscriptAttachment[];
   createdAt: string;
 }
 
@@ -257,7 +264,7 @@ export class SessionStore {
     this.persist();
   }
 
-  beginTurn(text: string): void {
+  beginTurn(text: string, attachments: TranscriptAttachment[] = []): void {
     const session = this.active;
     if (!session) {
       return;
@@ -270,11 +277,16 @@ export class SessionStore {
       id: randomUUID(),
       kind: "user",
       turnId,
-      text,
+      text: text || undefined,
+      attachments: attachments.length ? structuredClone(attachments) : undefined,
       createdAt: new Date().toISOString(),
     });
     if (session.title === "New session") {
-      session.title = titleFromPrompt(text);
+      session.title = text.trim()
+        ? titleFromPrompt(text)
+        : attachments.length
+          ? titleFromPrompt(`Image: ${attachments[0].name}`)
+          : "Image prompt";
     }
     this.touch(session);
   }
@@ -468,11 +480,16 @@ export class SessionStore {
       return;
     }
     const text = contentText(content);
-    if (!text) {
+    const attachment = kind === "user" ? contentAttachment(content) : undefined;
+    if (!text && !attachment) {
       return;
     }
     let turnId = this.activeTurnId;
-    if (this.replaying && kind === "user") {
+    if (
+      this.replaying &&
+      kind === "user" &&
+      session.entries.at(-1)?.kind !== "user"
+    ) {
       turnId = randomUUID();
       this.activeTurnId = turnId;
       session.currentPlan = undefined;
@@ -483,14 +500,20 @@ export class SessionStore {
     }
     const last = session.entries.at(-1);
     if (last?.kind === kind && last.turnId === turnId && last.status === "streaming") {
-      last.text = `${last.text ?? ""}${text}`;
+      if (text) {
+        last.text = `${last.text ?? ""}${text}`;
+      }
+      if (attachment) {
+        last.attachments = [...(last.attachments ?? []), attachment];
+      }
       return;
     }
     session.entries.push({
       id: randomUUID(),
       kind,
       turnId,
-      text,
+      text: text || undefined,
+      attachments: attachment ? [attachment] : undefined,
       status: "streaming",
       createdAt: new Date().toISOString(),
     });
@@ -573,6 +596,24 @@ function contentText(value: unknown): string {
     return `[${value.name}]`;
   }
   return "";
+}
+
+function contentAttachment(value: unknown): TranscriptAttachment | undefined {
+  if (!isRecord(value) || value.type !== "image") {
+    return undefined;
+  }
+  const mimeType = typeof value.mimeType === "string" ? value.mimeType : "image";
+  const uri = typeof value.uri === "string" ? value.uri : "";
+  const rawName = uri.split(/[\\/]/).at(-1);
+  let name = "Image";
+  if (rawName) {
+    try {
+      name = decodeURIComponent(rawName);
+    } catch {
+      name = rawName;
+    }
+  }
+  return { type: "image", name, mimeType };
 }
 
 function isSessionRecord(value: unknown): value is SessionRecord {

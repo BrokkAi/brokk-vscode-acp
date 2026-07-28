@@ -229,6 +229,7 @@ version = "0.3.8"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
+ "base64",
  "bzip2",
  "flate2",
  "reqwest",

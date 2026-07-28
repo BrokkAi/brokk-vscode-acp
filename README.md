@@ -59,6 +59,9 @@ Markdown, and the prompt composer together in the VS Code sidebar.
 - Typing `/` opens autocomplete for the session's live ACP
   `available_commands_update` list, including descriptions and input hints.
   Use Up/Down to navigate, Enter or Tab to insert, and Escape to close.
+- Attach or paste PNG, JPEG, GIF, and WebP images when the connected agent
+  advertises the standard ACP image prompt capability. Attachments are
+  previewed before sending and remain identified in the transcript.
 
 ### ACP client surface
 
@@ -111,7 +114,8 @@ code --install-extension brokk.brokk-vscode-acp
 4. Start a new session, or open **Sessions** to discover and resume sessions
    exposed by that agent.
 5. Prompt the agent from the composer. Use `/` to discover commands advertised
-   for the active session.
+   for the active session. For image-capable agents, use the attachment button
+   or paste an image directly into the composer.
 6. Review permission requests and agent activity in the structured transcript.
    Stop cancels the active prompt.
 
@@ -163,8 +167,8 @@ deprecated.
   file-access boundary.
 - Session listing, deletion, loading, and resuming depend on capabilities
   advertised by the selected agent.
-- Prompts are currently text-only; image and resource attachments, elicitation
-  forms, and session forking are not yet exposed in the UI.
+- Resource attachments, elicitation forms, and session forking are not yet
+  exposed in the UI.
 - Untrusted workspaces are not supported because coding agents can request file
   edits and terminal commands.
 
@@ -177,6 +181,8 @@ ACP agents are coding agents and may request file edits or commands. Brokk ACP:
 - resolves existing paths and write ancestors before allowing access;
 - runs client-owned terminal commands inside that workspace folder;
 - caps retained terminal output;
+- validates image formats and enforces per-image, per-prompt, and attachment
+  count limits before forwarding image content;
 - stores environment-authentication secrets in VS Code Secret Storage; and
 - verifies registry checksums before installing binary distributions.
 

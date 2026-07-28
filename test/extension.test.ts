@@ -512,7 +512,10 @@ describe("ChatView", () => {
       type: "connected",
       connection_id: 1,
       agent: "Renamed",
-      agent_capabilities: { sessionCapabilities: { list: {}, delete: {} } },
+      agent_capabilities: {
+        promptCapabilities: { image: true },
+        sessionCapabilities: { list: {}, delete: {} },
+      },
     });
     host.fire({
       type: "session_started",
@@ -539,6 +542,7 @@ describe("ChatView", () => {
       agentId: choice.id,
       canList: true,
       canDelete: true,
+      canPromptImages: true,
     });
     expect(state.active).toMatchObject({
       remoteId: "remote",
@@ -618,7 +622,11 @@ describe("ChatView", () => {
     chat.resolveWebviewView(resolved.view);
     await chat.newSession(first.id);
     host.fire({ type: "connecting", connection_id: 3 });
-    host.fire({ type: "connected", connection_id: 3, agent_capabilities: {} });
+    host.fire({
+      type: "connected",
+      connection_id: 3,
+      agent_capabilities: { promptCapabilities: { image: true } },
+    });
     host.fire({ type: "session_started", session_id: "remote", method: "new" });
 
     await resolved.receive({ type: "prompt", text: "  Build  " });
@@ -646,6 +654,36 @@ describe("ChatView", () => {
 
     await resolved.receive({ type: "refresh_sessions" });
     expect(host.sent.at(-1)).toEqual({ type: "refresh_sessions" });
+    host.fire({ type: "turn_completed", stop_reason: "end_turn" });
+    await resolved.receive({
+      type: "prompt",
+      text: "",
+      images: [
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          name: "screen.png",
+        },
+      ],
+    });
+    expect(host.sent.at(-1)).toEqual({
+      type: "prompt",
+      text: "",
+      images: [
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          name: "screen.png",
+        },
+      ],
+    });
+    expect(
+      (chat as never as {
+        sessions: { active: { entries: Array<{ attachments?: unknown[] }> } };
+      }).sessions.active.entries.at(-1)?.attachments,
+    ).toEqual([
+      { type: "image", name: "screen.png", mimeType: "image/png" },
+    ]);
     host.fire({ type: "turn_completed", stop_reason: "end_turn" });
     await resolved.receive({ type: "new_session", agent_id: second.id });
     expect(host.disconnectCalls).toBe(1);
@@ -706,6 +744,47 @@ describe("ChatView", () => {
     expect(mocks.showErrorMessage).toHaveBeenCalledWith("Choose an installed ACP agent.");
     await resolved.receive(null);
     await resolved.receive({ type: 7 });
+  });
+
+  it("rejects malformed images and agents without image prompt support", async () => {
+    const context = extensionContext();
+    const host = new FakeHost();
+    const choice = agent();
+    const chat = new ChatView(context, host as never, catalogWith(context, [choice]));
+    const resolved = fakeView();
+    chat.resolveWebviewView(resolved.view);
+    await chat.newSession(choice.id);
+    host.fire({ type: "connecting", connection_id: 8 });
+    host.fire({
+      type: "connected",
+      connection_id: 8,
+      agent_capabilities: { promptCapabilities: { image: false } },
+    });
+    host.fire({ type: "session_started", session_id: "remote", method: "new" });
+
+    await resolved.receive({
+      type: "prompt",
+      text: "Look",
+      images: [
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          name: "screen.png",
+        },
+      ],
+    });
+    expect(mocks.showErrorMessage).toHaveBeenLastCalledWith(
+      "This ACP agent does not support image prompts.",
+    );
+    expect(host.sent).not.toContainEqual(expect.objectContaining({ type: "prompt" }));
+
+    await resolved.receive({
+      type: "prompt",
+      images: [{ data: "bad", mimeType: "image/png" }],
+    });
+    expect(mocks.showErrorMessage).toHaveBeenLastCalledWith(
+      "Image 1 is not valid base64.",
+    );
   });
 
   it("covers rejected messages and safe session edge cases", async () => {

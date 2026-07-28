@@ -209,7 +209,15 @@ describe("webview client", () => {
             { content: "Implement", priority: "medium", status: "in_progress" },
           ],
           entries: [
-            { id: "u", kind: "user", text: "Build it", createdAt: "2026-07-28T00:00:00Z" },
+            {
+              id: "u",
+              kind: "user",
+              text: "Build it",
+              attachments: [
+                { type: "image", name: "screen.png", mimeType: "image/png" },
+              ],
+              createdAt: "2026-07-28T00:00:00Z",
+            },
             {
               id: "a",
               kind: "assistant",
@@ -259,6 +267,7 @@ describe("webview client", () => {
     expect(harness.document.querySelector("#plan-dock")?.textContent).toContain("Implement");
     expect(harness.document.querySelector("#transcript-inner strong")?.textContent).toBe("Done");
     expect(harness.document.querySelector("#transcript-inner code")?.textContent).toBe("code");
+    expect(harness.document.querySelector(".user-attachment")?.textContent).toContain("screen.png");
     expect(harness.document.querySelector("#composer-hint")?.textContent).toBe("25% context");
 
     const permission = [...harness.document.querySelectorAll<HTMLButtonElement>("button")].find(
@@ -304,6 +313,80 @@ describe("webview client", () => {
     harness.document.querySelector<HTMLButtonElement>("#send-button")!.click();
     expect(harness.posted.at(-1)).toEqual({ type: "prompt", text: "Run the review" });
     expect(prompt.value).toBe("");
+  });
+
+  it("attaches, previews, removes, pastes, and submits ACP images", async () => {
+    const harness = await createHarness();
+    await harness.sendState(
+      baseState({
+        active: activeSession(),
+        connection: {
+          phase: "connected",
+          agentId: "bundled:anvil",
+          canPromptImages: true,
+        },
+      }),
+    );
+
+    const input = harness.document.querySelector<HTMLInputElement>("#image-input")!;
+    const prompt = harness.document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    const png = new harness.window.File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "screen.png",
+      { type: "image/png" },
+    );
+    Object.defineProperty(input, "files", { configurable: true, value: [png] });
+    input.dispatchEvent(new harness.window.Event("change"));
+    await harness.window.happyDOM.waitUntilComplete();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(harness.document.querySelector(".image-preview img")?.getAttribute("src")).toBe(
+      "data:image/png;base64,iVBORw0KGgo=",
+    );
+    expect(harness.document.querySelector(".image-preview-name")?.textContent).toBe(
+      "screen.png",
+    );
+    expect(harness.document.querySelector<HTMLButtonElement>("#send-button")!.disabled).toBe(
+      false,
+    );
+
+    harness.document.querySelector<HTMLButtonElement>(".image-preview-remove")!.click();
+    expect(harness.document.querySelector(".image-preview")).toBeNull();
+
+    const paste = new harness.window.Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [png] } });
+    prompt.dispatchEvent(paste);
+    await harness.window.happyDOM.waitUntilComplete();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    prompt.value = "Describe this";
+    prompt.dispatchEvent(new harness.window.Event("input"));
+    harness.document.querySelector<HTMLButtonElement>("#send-button")!.click();
+
+    expect(harness.posted.at(-1)).toEqual({
+      type: "prompt",
+      text: "Describe this",
+      images: [
+        {
+          data: "iVBORw0KGgo=",
+          mimeType: "image/png",
+          name: "screen.png",
+        },
+      ],
+    });
+    expect(harness.document.querySelector(".image-preview")).toBeNull();
+  });
+
+  it("disables image attachment for text-only agents", async () => {
+    const harness = await createHarness();
+    await harness.sendState(
+      baseState({
+        active: activeSession(),
+        connection: { phase: "connected", canPromptImages: false },
+      }),
+    );
+    const attach = harness.document.querySelector<HTMLButtonElement>("#attach-button")!;
+    expect(attach.disabled).toBe(true);
+    expect(attach.title).toContain("does not advertise");
   });
 
   it("renders authentication, banners, session drawers, and connection progress", async () => {
