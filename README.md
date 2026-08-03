@@ -264,12 +264,17 @@ Rust gate locally. HTML TypeScript results are written to
 Merging a synchronized version bump to `master` starts the release workflow.
 It validates the complete suite, builds all five supported platform VSIX
 files, creates the annotated `v<version>` tag, publishes the platform packages
-to the Visual Studio Marketplace, and creates a GitHub release with every VSIX
-attached. A matching tag can also start a release, and a manual workflow run
-builds the packages without publishing them.
+to the Visual Studio Marketplace and Open VSX Registry, and creates a GitHub
+release with every VSIX attached. A matching tag can also start a release, and
+a manual workflow run builds the packages without publishing them.
 
 Repository administrators must configure `VSCE_PAT` for the Visual Studio
-Marketplace as a GitHub Actions secret.
+Marketplace and `OVSX_PAT` for Open VSX as GitHub Actions secrets. Before the
+first Open VSX release, the `brokk` namespace must exist and the token owner
+must be an owner or contributor. Generate a dedicated CI token in Open VSX
+after signing the Publisher Agreement, store it only as `OVSX_PAT`, and use the
+Open VSX namespace settings to confirm access. The release workflow can perform
+the first extension publish; a manual publish is not otherwise required.
 
 ## Corresponding source
 

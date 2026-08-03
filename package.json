@@ -170,6 +170,7 @@
     "esbuild": "^0.25.0",
     "extract-zip": "^2.0.1",
     "happy-dom": "^20.11.1",
+    "ovsx": "^1.1.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.10"
   }
