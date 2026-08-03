@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Show a clear Open Folder state instead of empty session controls when VS Code has no folder open.
+- Publish release VSIX packages to the Open VSX Registry as well as the Visual Studio Marketplace.
 
 ## 0.4.0 - 2026-07-28
 
