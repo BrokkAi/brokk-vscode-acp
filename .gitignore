@@ -12,3 +12,6 @@
 /.bifrost/
 /.brokk/
 __pycache__/
+
+# Mjolnir local state
+.mjolnir/
