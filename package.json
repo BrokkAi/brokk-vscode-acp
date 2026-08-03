@@ -19,9 +19,17 @@
   "pricing": "Free",
   "description": "Open Agent Client Protocol coding in VS Code with bundled Anvil and the official ACP registry",
   "version": "0.4.0",
+  "packageManager": "npm@10.9.4",
   "license": "GPL-3.0-only",
   "engines": {
     "vscode": "^1.95.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": "10.9.4",
+      "onFail": "error"
+    }
   },
   "categories": ["Other", "Machine Learning"],
   "keywords": ["acp", "agent", "coding", "brokk", "anvil"],

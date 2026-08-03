@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - run: npm install --global npm@10.9.4
       - uses: dtolnay/rust-toolchain@stable
       - run: npm ci
       - run: cargo install --locked cargo-about --version 0.9.1 --features cli
